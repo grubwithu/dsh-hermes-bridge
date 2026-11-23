@@ -12,7 +12,7 @@ import type {
   DshSessionsService,
   DshUserMessage,
   DshUserQuestionsService,
-  PerQuestionAnswerInput,
+  StructuredQuestionAnswerInput,
 } from "./types.js";
 import type { PendingStore } from "./pending-store.js";
 import { getOptionalService } from "./event-listeners.js";
@@ -107,7 +107,7 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: "dsh_answer_question",
     description:
-      "Answer a pending ask_user_question prompt in DSH. FAST PATH (1-step, no dsh_list_status needed): Take the short number from '[#N]' in the chat history as pendingId (e.g. '#5') and pass the user's raw reply directly in answerText (e.g. answerText='A', '1选A，2选BC', 'A, BC', or '红'). The bridge server automatically resolves option letters (A/B/C), multi-select letters (AB, A和C), multi-question replies, and partial labels (matching '功能正常' to '功能正常（推荐）') on the server side.",
+      "Submit the user's answer to a pending DSH ask_user_question prompt using a strict JSON Schema. You (the LLM) are responsible for interpreting the user's natural-language message and converting it into the fixed `answers` array (one entry per question in the prompt). For multiple-choice selections, put the chosen option letter(s) ('A', 'B', 'C', ...) into `selected`. For custom free-text answers outside the options, set `selected: []` and put the text in `custom`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -116,47 +116,43 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
           description:
             "The short message number from '[#N]' (e.g. '#5' or '5') or full pendingId (e.g. 'qst_1b4c').",
         },
-        answerText: {
-          type: "string",
-          description:
-            "Preferred: pass the user's reply or option letter(s) directly (e.g. 'A', 'AC', '1选A，2选BC', 'A, BC', or free-text answer). Server resolves letters and labels automatically.",
-        },
-        selectedOptions: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Optional selected option letter(s) (e.g. ['A'], ['A', 'C']) or labels. For multi-question prompts, you can pass one entry per question (e.g. ['A', 'BC']). Not required if answerText is provided.",
-        },
         answers: {
           type: "array",
+          minItems: 1,
           description:
-            "Optional per-question answers when a single ask_user_question prompt contains multiple questions.",
+            "Strict array of per-question answers. Must contain exactly one entry for each question in the pending prompt.",
           items: {
             type: "object",
             properties: {
-              questionId: {
-                type: "string",
-                description: "Question id (if known).",
-              },
               questionIndex: {
-                type: "number",
-                description: "1-based question number (1, 2, ...).",
+                type: "integer",
+                minimum: 1,
+                description:
+                  "1-based question index matching the numbered question in the prompt (1 for Question 1, 2 for Question 2, etc.).",
               },
-              answerText: {
+              id: {
                 type: "string",
-                description: "Answer text or option letter(s) for this question.",
+                description:
+                  "Optional DSH question id (if known; otherwise questionIndex identifies the question).",
               },
-              selectedOptions: {
+              selected: {
                 type: "array",
                 items: { type: "string" },
-                description: "Selected option letter(s) ('A', 'B') or option labels for this question.",
+                description:
+                  "Array of selected option letters ('A', 'B', 'C', ...) for this question. Single-select questions allow at most 1 item (e.g. ['A']); multi-select questions allow 1 or more items (e.g. ['A', 'C']). Pass [] if the user answered with custom free-form text instead of selecting an option.",
+              },
+              custom: {
+                type: "string",
+                description:
+                  "Optional free-form custom answer text when the question has no predefined options or the user provided an answer outside the offered options.",
               },
             },
+            required: ["questionIndex", "selected"],
             additionalProperties: false,
           },
         },
       },
-      required: ["pendingId"],
+      required: ["pendingId", "answers"],
       additionalProperties: false,
     },
     annotations: {
@@ -647,8 +643,6 @@ export class BridgeMcpServer {
 
       case "dsh_answer_question": {
         const pendingId = typeof args["pendingId"] === "string" ? args["pendingId"].trim() : "";
-        const answerText = typeof args["answerText"] === "string" ? args["answerText"] : undefined;
-        const selectedOptionsRaw = args["selectedOptions"];
         const answersRaw = args["answers"];
 
         if (!pendingId) {
@@ -657,40 +651,27 @@ export class BridgeMcpServer {
           };
         }
         if (
-          answerText === undefined &&
-          selectedOptionsRaw === undefined &&
-          answersRaw === undefined
+          !Array.isArray(answersRaw) ||
+          answersRaw.length === 0 ||
+          answersRaw.some(
+            (item) =>
+              typeof item !== "object" ||
+              item === null ||
+              Array.isArray(item) ||
+              !Array.isArray((item as { selected?: unknown }).selected) ||
+              (item as { selected: unknown[] }).selected.some((s) => typeof s !== "string"),
+          )
         ) {
           return {
             jsonRpcInvalidParams:
-              "Invalid params: at least one of answerText, selectedOptions, or answers must be provided",
-          };
-        }
-        if (
-          selectedOptionsRaw !== undefined &&
-          (!Array.isArray(selectedOptionsRaw) ||
-            selectedOptionsRaw.some((item) => typeof item !== "string"))
-        ) {
-          return {
-            jsonRpcInvalidParams: "Invalid params: selectedOptions must be an array of strings",
-          };
-        }
-        if (
-          answersRaw !== undefined &&
-          (!Array.isArray(answersRaw) ||
-            answersRaw.some((item) => typeof item !== "object" || item === null || Array.isArray(item)))
-        ) {
-          return {
-            jsonRpcInvalidParams: "Invalid params: answers must be an array of objects",
+              'Invalid params: answers must be a non-empty array of objects matching { questionIndex: number, selected: string[], custom?: string }',
           };
         }
 
         const result = this.store.answerQuestion(
           pendingId,
           {
-            answerText: answerText ?? "",
-            selectedOptions: selectedOptionsRaw as string[] | undefined,
-            answers: answersRaw as PerQuestionAnswerInput[] | undefined,
+            answers: answersRaw as StructuredQuestionAnswerInput[],
           },
           () => getOptionalService<DshUserQuestionsService>(this.ctx, "userQuestions"),
         );

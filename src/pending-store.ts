@@ -10,8 +10,8 @@ import type {
   DshUserQuestionsService,
   PendingApprovalView,
   PendingQuestionView,
-  PerQuestionAnswerInput,
   RecentStoppedView,
+  StructuredQuestionAnswerInput,
 } from "./types.js";
 
 const MAX_RECENT_STOPPED = 20;
@@ -103,7 +103,11 @@ export type AnswerQuestionResult =
     }
   | {
       ok: false;
-      code: "EXPIRED_OR_RESTARTED" | "USER_QUESTIONS_UNAVAILABLE" | "REPLY_ERROR";
+      code:
+        | "EXPIRED_OR_RESTARTED"
+        | "INVALID_ANSWER_SCHEMA"
+        | "USER_QUESTIONS_UNAVAILABLE"
+        | "REPLY_ERROR";
       message: string;
     };
 
@@ -245,464 +249,167 @@ function flattenQuestionOptions(
   return out;
 }
 
-function matchApprovalIntent(
-  q: AskUserQuestionItem,
-  answerText: string,
-): string | undefined {
-  if (q.intent?.kind === "approval") {
-    const normalized = answerText.trim().toLowerCase();
-    if (q.intent.always && /^(总是|以后都|始终|always|allow[- ]?always|always[- ]?allow)$/i.test(normalized)) {
-      return q.intent.always;
+export type ValidateQuestionAnswerResult =
+  | {
+      ok: true;
+      answer: AskUserQuestionAnswer;
     }
-    if (/^(同意|允许|放行|批准|通过|确认|好的?|可以|行|是|yes|ok|okay|approve|allow)$/i.test(normalized)) {
-      return q.intent.approve;
-    }
-    if (/^(拒绝|不同意|取消|不行|不要|否|不|no|reject|deny|decline|cancel)$/i.test(normalized)) {
-      return q.intent.reject;
-    }
-  }
-  if (q.intent?.kind === "plan-review") {
-    const normalized = answerText.trim().toLowerCase();
-    if (/^(同意|批准|通过|确认|按这个做|可以|yes|approve|ok)$/i.test(normalized)) {
-      return q.intent.approve;
-    }
-  }
-  return undefined;
-}
+  | {
+      ok: false;
+      code: "INVALID_ANSWER_SCHEMA";
+      message: string;
+    };
 
-function normalizeOptionBase(text: string): string {
-  let s = text.trim();
-  // Strip leading letter/number bullet like "A. ", "B: ", "1. "
-  s = s.replace(/^(?:[A-Za-z]|[1-9]\d*)[.:：、)\]]\s*/, "");
-  // Repeatedly strip trailing parenthetical annotations like "（推荐）", "(Recommended)", "[默认]"
-  let prev = "";
-  while (s !== prev) {
-    prev = s;
-    s = s.replace(/\s*(?:（[^）]*）|\([^)]*\)|【[^】]*】|\[[^\]]*\])\s*$/, "").trim();
-  }
-  return s.toLowerCase();
-}
+function resolveStrictOptionSelection(
+  options: AskUserQuestionOption[],
+  rawSelection: string,
+  questionNumber: number,
+): { ok: true; label: string } | { ok: false; message: string } {
+  const token = rawSelection.trim();
+  const validSummary = options
+    .map((opt, idx) => `${optionIndexToLetter(idx)}: ${opt.label}`)
+    .join(", ");
 
-const CN_NUM_MAP: Record<string, number> = {
-  一: 1,
-  二: 2,
-  两: 2,
-  三: 3,
-  四: 4,
-  五: 5,
-  六: 6,
-  七: 7,
-  八: 8,
-  九: 9,
-  十: 10,
-};
-
-function parseChineseOrArabicNumber(raw: string): number | undefined {
-  const trimmed = raw.trim();
-  if (/^\d+$/.test(trimmed)) {
-    const n = Number(trimmed);
-    return Number.isSafeInteger(n) && n > 0 ? n : undefined;
-  }
-  return CN_NUM_MAP[trimmed];
-}
-
-function matchOptionToken(options: AskUserQuestionOption[], rawToken: string): string[] {
-  const token = rawToken.trim();
-  if (!token || options.length === 0) {
-    return [];
-  }
-
-  // 1. Exact label match (case-insensitive)
-  const exact = options.find(
-    (opt) => opt.label.trim().toLowerCase() === token.toLowerCase(),
-  );
-  if (exact) {
-    return [exact.label];
-  }
-
-  // Strip common conversational prefixes like "选", "我选", "选择", "选项", "答案是"
-  const cleaned = token
-    .replace(/^(?:我?\s*选择?|选项|答案\s*是?|选)\s*/i, "")
-    .trim();
-  const target = cleaned || token;
-
-  const exactAfterClean = options.find(
-    (opt) => opt.label.trim().toLowerCase() === target.toLowerCase(),
-  );
-  if (exactAfterClean) {
-    return [exactAfterClean.label];
-  }
-
-  // 2. Single letter code match: "A", "b", "A.", "(A)", "[A]", "A: 功能正常", "A. 功能正常"
-  const singleLetterMatch =
-    /^(?:[\(\[（【]?\s*([A-Za-z])\s*[\)\]）】]?)(?:[.:：、)\]\s-]+\s*(.+))?$/.exec(target);
-  if (singleLetterMatch?.[1]) {
-    const letter = singleLetterMatch[1].toUpperCase();
-    const rest = singleLetterMatch[2]?.trim();
-    const idx = letter.charCodeAt(0) - 65;
-    if (idx >= 0 && idx < options.length) {
-      const candidateOpt = options[idx]!;
-      if (!rest) {
-        return [candidateOpt.label];
-      }
-      const restBase = normalizeOptionBase(rest);
-      const optBase = normalizeOptionBase(candidateOpt.label);
-      if (
-        !restBase ||
-        optBase.includes(restBase) ||
-        restBase.includes(optBase) ||
-        candidateOpt.label.toLowerCase().includes(rest.toLowerCase())
-      ) {
-        return [candidateOpt.label];
-      }
-    }
-  }
-
-  // 3. Compact multi-letter combination like "AB", "AC", "ABC" (when all chars are valid option letters A..Z)
-  if (/^[A-Za-z]{2,10}$/.test(target)) {
-    const upper = target.toUpperCase();
-    const indices = [...upper].map((ch) => ch.charCodeAt(0) - 65);
-    if (indices.every((idx) => idx >= 0 && idx < options.length)) {
-      const labels: string[] = [];
-      for (const idx of indices) {
-        const label = options[idx]!.label;
-        if (!labels.includes(label)) {
-          labels.push(label);
-        }
-      }
-      return labels;
-    }
-  }
-
-  // 4. Numeric 1-based index match: "1", "2", "第一个", "第2项"
-  const numMatch = /^(?:第\s*)?([1-9]\d*|[一二两三四五六七八九十])(?:\s*[个项])?$/.exec(target);
-  if (numMatch?.[1]) {
-    const num = parseChineseOrArabicNumber(numMatch[1]);
-    if (num !== undefined && num >= 1 && num <= options.length) {
-      return [options[num - 1]!.label];
-    }
-  }
-
-  // 5. Normalized base label match (e.g. "功能正常" matches "功能正常（推荐）")
-  const candBase = normalizeOptionBase(target);
-  if (candBase.length > 0) {
-    const baseMatches = options.filter(
-      (opt) => normalizeOptionBase(opt.label) === candBase,
-    );
-    if (baseMatches.length === 1) {
-      return [baseMatches[0]!.label];
-    }
-
-    // 6. Unambiguous prefix or substring match
-    if (candBase.length >= 2) {
-      const prefixMatches = options.filter((opt) => {
-        const optBase = normalizeOptionBase(opt.label);
-        return (
-          optBase.startsWith(candBase) ||
-          opt.label.toLowerCase().startsWith(candBase) ||
-          (optBase.length >= 2 && candBase.startsWith(optBase))
-        );
-      });
-      if (prefixMatches.length === 1) {
-        return [prefixMatches[0]!.label];
-      }
-
-      const substrMatches = options.filter((opt) => {
-        const optBase = normalizeOptionBase(opt.label);
-        return (
-          opt.label.toLowerCase().includes(candBase) ||
-          (optBase.length >= 2 && candBase.includes(optBase))
-        );
-      });
-      if (substrMatches.length === 1) {
-        return [substrMatches[0]!.label];
-      }
-    }
-  }
-
-  return [];
-}
-
-function splitCandidateParts(text: string): string[] {
-  return text
-    .split(/[,，、;；/\n]+|(?:\s+(?:和|与|及|以及|and)\s+)|(?<=[A-Za-z])(?:和|与|及)(?=[A-Za-z])/i)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function resolveSingleQuestionAnswer(
-  q: AskUserQuestionItem,
-  rawAnswerText: string,
-  rawSelectedOptions: string[],
-): AskUserQuestionAnswerItem {
-  const options = q.options ?? [];
-  const trimmedText = rawAnswerText.trim();
-  const normalizedSelectedInput = rawSelectedOptions.map((item) => item.trim()).filter(Boolean);
-  const matchedLabels: string[] = [];
-
-  const addMatched = (labels: string[]) => {
-    for (const label of labels) {
-      if (!matchedLabels.includes(label)) {
-        matchedLabels.push(label);
-      }
-    }
-  };
-
-  const matchCandidateString = (candidate: string) => {
-    const exactWhole = options.find(
-      (opt) => opt.label.trim().toLowerCase() === candidate.trim().toLowerCase(),
-    );
-    if (exactWhole) {
-      addMatched([exactWhole.label]);
-      return;
-    }
-    const parts = splitCandidateParts(candidate);
-    if (q.multiSelect && parts.length > 1) {
-      for (const sub of parts) {
-        addMatched(matchOptionToken(options, sub));
-      }
-      if (matchedLabels.length > 0) {
-        return;
-      }
-    }
-    const direct = matchOptionToken(options, candidate);
-    if (direct.length > 0) {
-      addMatched(direct);
-    } else if (parts.length > 1) {
-      for (const sub of parts) {
-        addMatched(matchOptionToken(options, sub));
-      }
-    }
-  };
-
-  if (normalizedSelectedInput.length > 0 && options.length > 0) {
-    for (const candidate of normalizedSelectedInput) {
-      matchCandidateString(candidate);
-    }
-  }
-
-  if (matchedLabels.length === 0 && options.length > 0 && trimmedText.length > 0) {
-    matchCandidateString(trimmedText);
-  }
-
-  if (matchedLabels.length === 0 && trimmedText.length > 0) {
-    const intentLabel = matchApprovalIntent(q, trimmedText);
-    if (intentLabel) {
-      addMatched([intentLabel]);
-    }
-  }
-
-  if (matchedLabels.length > 0) {
-    const finalSelected = q.multiSelect ? matchedLabels : [matchedLabels[0]!];
+  if (!token) {
     return {
-      id: q.id,
-      selected: finalSelected,
+      ok: false,
+      message: `Question ${questionNumber} received an empty string in "selected". Valid options are: [${validSummary}].`,
     };
   }
 
-  const fallbackCustom =
-    trimmedText ||
-    (normalizedSelectedInput.length > 0 ? normalizedSelectedInput.join(", ") : rawAnswerText);
+  // 1. Option letter code ("A", "B", "C" or "A.")
+  const letterMatch = /^([A-Za-z])\.?$/.exec(token);
+  if (letterMatch?.[1]) {
+    const idx = letterMatch[1].toUpperCase().charCodeAt(0) - 65;
+    if (idx >= 0 && idx < options.length) {
+      return { ok: true, label: options[idx]!.label };
+    }
+    return {
+      ok: false,
+      message: `Option letter "${token}" is out of range for question ${questionNumber}. Valid options are: [${validSummary}].`,
+    };
+  }
+
+  // 2. Exact option label match
+  const exact = options.find((opt) => opt.label === token);
+  if (exact) {
+    return { ok: true, label: exact.label };
+  }
 
   return {
-    id: q.id,
-    selected: [],
-    custom: fallbackCustom,
+    ok: false,
+    message: `Option "${token}" does not match any option for question ${questionNumber}. Pass the option letter (${options.map((_, i) => `"${optionIndexToLetter(i)}"`).join(", ")}) in "selected", or use "selected": [] with "custom": "..." for a custom free-text answer. Valid options: [${validSummary}].`,
   };
 }
 
-function extractPerQuestionTextSegments(
-  answerText: string,
+export function validateAndBuildQuestionAnswer(
   questions: AskUserQuestionItem[],
-): Map<number, string> | undefined {
-  const questionCount = questions.length;
-  const trimmed = answerText.trim();
-  if (!trimmed || questionCount <= 1) {
-    return undefined;
+  answersInput: StructuredQuestionAnswerInput[],
+): ValidateQuestionAnswerResult {
+  if (!Array.isArray(answersInput) || answersInput.length !== questions.length) {
+    return {
+      ok: false,
+      code: "INVALID_ANSWER_SCHEMA",
+      message: `Pending prompt has ${questions.length} question(s), but "answers" contains ${Array.isArray(answersInput) ? answersInput.length : 0} item(s). Provide exactly ${questions.length} item(s), one for each question (questionIndex 1..${questions.length}).`,
+    };
   }
 
-  // Pattern 1: Explicit question markers like "1. A; 2. B", "1选A，2选BC", "第一题：A，第二题：B", "Q1: A Q2: B"
-  const markerRegex =
-    /(?:^|[\s,，;；\n])(?:第\s*([1-9]\d*|[一二两三四五六七八九十])\s*[题个项问题]\s*(?:选|选择|是|为|[:：.、)\]])?\s*|Q(?:uestion)?\s*([1-9]\d*)\s*(?:选|选择|[:：.、)\]])\s*|([1-9]\d*)\s*(?:选|选择|[:：.、)\]])\s*)/gi;
+  const builtAnswers: AskUserQuestionAnswerItem[] = [];
 
-  const matches: Array<{ qIndex: number; start: number; contentStart: number }> = [];
-  let match: RegExpExecArray | null;
-  while ((match = markerRegex.exec(trimmed)) !== null) {
-    const rawNum = match[1] ?? match[2] ?? match[3] ?? "";
-    const qNum = parseChineseOrArabicNumber(rawNum);
-    if (qNum !== undefined && qNum >= 1 && qNum <= questionCount) {
-      matches.push({
-        qIndex: qNum - 1,
-        start: match.index,
-        contentStart: match.index + match[0].length,
-      });
+  for (let qIndex = 0; qIndex < questions.length; qIndex++) {
+    const q = questions[qIndex]!;
+    const questionNumber = qIndex + 1;
+    const options = q.options ?? [];
+
+    const item =
+      answersInput.find((a) => typeof a.id === "string" && a.id.trim() === q.id) ??
+      answersInput.find((a) => a.questionIndex === questionNumber) ??
+      (answersInput[qIndex]?.questionIndex === undefined && answersInput[qIndex]?.id === undefined
+        ? answersInput[qIndex]
+        : undefined);
+
+    if (!item || typeof item !== "object") {
+      return {
+        ok: false,
+        code: "INVALID_ANSWER_SCHEMA",
+        message: `Missing answer entry for question ${questionNumber} (id="${q.id}"). Each entry must specify questionIndex=${questionNumber} (or id="${q.id}").`,
+      };
     }
-  }
 
-  if (matches.length >= 2) {
-    const byQuestion = new Map<number, string>();
-    for (let i = 0; i < matches.length; i++) {
-      const cur = matches[i]!;
-      const next = matches[i + 1];
-      const slice = trimmed
-        .slice(cur.contentStart, next ? next.start : trimmed.length)
-        .replace(/^[\s,，;；:：]+|[\s,，;；]+$/g, "");
-      if (slice) {
-        byQuestion.set(cur.qIndex, slice);
+    if (!Array.isArray(item.selected) || item.selected.some((s) => typeof s !== "string")) {
+      return {
+        ok: false,
+        code: "INVALID_ANSWER_SCHEMA",
+        message: `Invalid "selected" field for question ${questionNumber}: must be an array of strings (e.g. ["A"] or []).`,
+      };
+    }
+
+    if (item.custom !== undefined && typeof item.custom !== "string") {
+      return {
+        ok: false,
+        code: "INVALID_ANSWER_SCHEMA",
+        message: `Invalid "custom" field for question ${questionNumber}: must be a string if provided.`,
+      };
+    }
+
+    if (options.length === 0 && item.selected.length > 0) {
+      return {
+        ok: false,
+        code: "INVALID_ANSWER_SCHEMA",
+        message: `Question ${questionNumber} has no predefined options; pass "selected": [] and provide the user's text in "custom".`,
+      };
+    }
+
+    if (!q.multiSelect && item.selected.length > 1) {
+      return {
+        ok: false,
+        code: "INVALID_ANSWER_SCHEMA",
+        message: `Question ${questionNumber} is single-select, but "selected" contains ${item.selected.length} options (${JSON.stringify(item.selected)}). Pass at most 1 option.`,
+      };
+    }
+
+    const resolvedLabels: string[] = [];
+    for (const rawSel of item.selected) {
+      const resolved = resolveStrictOptionSelection(options, rawSel, questionNumber);
+      if (!resolved.ok) {
+        return {
+          ok: false,
+          code: "INVALID_ANSWER_SCHEMA",
+          message: resolved.message,
+        };
+      }
+      if (!resolvedLabels.includes(resolved.label)) {
+        resolvedLabels.push(resolved.label);
       }
     }
-    if (byQuestion.size > 0) {
-      return byQuestion;
-    }
-  }
 
-  // Pattern 2: Semicolon or newline separated segments matching questionCount (e.g. "A; B, C" or "A\nB, C")
-  const semiParts = trimmed
-    .split(/[;；\n]+/)
-    .map((p) => p.trim())
-    .filter(Boolean);
-  if (semiParts.length === questionCount) {
-    const byQuestion = new Map<number, string>();
-    for (let i = 0; i < questionCount; i++) {
-      byQuestion.set(i, semiParts[i]!);
-    }
-    return byQuestion;
-  }
+    const customText =
+      typeof item.custom === "string" && item.custom.trim().length > 0
+        ? item.custom.trim()
+        : undefined;
 
-  // Pattern 3: Comma or whitespace separated segments matching questionCount (e.g. "A, BC", "A，B和C", "A B")
-  const commaParts = trimmed
-    .split(/[,，]+/)
-    .map((p) => p.trim())
-    .filter(Boolean);
-  if (commaParts.length === questionCount) {
-    const allMatch = commaParts.every((part, idx) => {
-      const qOpts = questions[idx]?.options ?? [];
-      if (qOpts.length === 0) return true;
-      return resolveSingleQuestionAnswer(questions[idx]!, part, []).selected.length > 0;
+    builtAnswers.push({
+      id: q.id,
+      selected: resolvedLabels,
+      ...(customText !== undefined ? { custom: customText } : {}),
     });
-    if (allMatch) {
-      const byQuestion = new Map<number, string>();
-      for (let i = 0; i < questionCount; i++) {
-        byQuestion.set(i, commaParts[i]!);
-      }
-      return byQuestion;
-    }
   }
 
-  const spaceParts = trimmed
-    .split(/\s+/)
-    .map((p) => p.trim())
-    .filter(Boolean);
-  if (spaceParts.length === questionCount) {
-    const allMatch = spaceParts.every((part, idx) => {
-      const qOpts = questions[idx]?.options ?? [];
-      if (qOpts.length === 0) return true;
-      return resolveSingleQuestionAnswer(questions[idx]!, part, []).selected.length > 0;
-    });
-    if (allMatch) {
-      const byQuestion = new Map<number, string>();
-      for (let i = 0; i < questionCount; i++) {
-        byQuestion.set(i, spaceParts[i]!);
-      }
-      return byQuestion;
-    }
-  }
-
-  return undefined;
-}
-
-function partitionSelectedOptionsByQuestion(
-  questions: AskUserQuestionItem[],
-  selectedOptions: string[],
-): Map<number, string[]> | undefined {
-  if (questions.length <= 1 || selectedOptions.length === 0) {
-    return undefined;
-  }
-
-  // Check if items carry explicit question prefixes like "1: A", "2: B, C", "Q1: A"
-  const prefixRegex =
-    /^(?:第\s*([1-9]\d*|[一二两三四五六七八九十])\s*[题个项]\s*[:：.、\s]\s*|Q(?:uestion)?\s*([1-9]\d*)\s*[:：.、\s]\s*|([1-9]\d*)\s*[:：.]\s*)(.+)$/i;
-  const prefixedMap = new Map<number, string[]>();
-  let prefixedCount = 0;
-  for (const item of selectedOptions) {
-    const m = prefixRegex.exec(item.trim());
-    if (m) {
-      const qNum = parseChineseOrArabicNumber(m[1] ?? m[2] ?? m[3] ?? "");
-      const rest = m[4]?.trim();
-      if (qNum !== undefined && qNum >= 1 && qNum <= questions.length && rest) {
-        prefixedCount++;
-        const list = prefixedMap.get(qNum - 1) ?? [];
-        list.push(rest);
-        prefixedMap.set(qNum - 1, list);
-      }
-    }
-  }
-  if (prefixedCount > 0) {
-    return prefixedMap;
-  }
-
-  // If selectedOptions length equals questions.length, map 1-to-1 positionally
-  if (selectedOptions.length === questions.length) {
-    const positionalMap = new Map<number, string[]>();
-    for (let i = 0; i < questions.length; i++) {
-      positionalMap.set(i, [selectedOptions[i]!]);
-    }
-    return positionalMap;
-  }
-
-  return undefined;
+  return {
+    ok: true,
+    answer: { answers: builtAnswers },
+  };
 }
 
 export function buildAskUserQuestionAnswer(
   questions: AskUserQuestionItem[],
-  answerText = "",
-  selectedOptions?: string[],
-  perQuestionAnswers?: PerQuestionAnswerInput[],
+  answersInput: StructuredQuestionAnswerInput[],
 ): AskUserQuestionAnswer {
-  const normalizedSelectedInput = (selectedOptions ?? []).map((item) => item.trim()).filter(Boolean);
-
-  if (Array.isArray(perQuestionAnswers) && perQuestionAnswers.length > 0) {
-    const answers: AskUserQuestionAnswerItem[] = questions.map((q, qIndex) => {
-      const explicit =
-        perQuestionAnswers.find((a) => a.questionId !== undefined && a.questionId === q.id) ??
-        perQuestionAnswers.find(
-          (a) =>
-            a.questionIndex !== undefined &&
-            (a.questionIndex === qIndex + 1 || (a.questionIndex === 0 && qIndex === 0)),
-        ) ??
-        perQuestionAnswers[qIndex];
-
-      if (!explicit) {
-        return resolveSingleQuestionAnswer(q, answerText, normalizedSelectedInput);
-      }
-      return resolveSingleQuestionAnswer(
-        q,
-        explicit.answerText ?? "",
-        explicit.selectedOptions ?? [],
-      );
-    });
-    return { answers };
+  const res = validateAndBuildQuestionAnswer(questions, answersInput);
+  if (!res.ok) {
+    throw new Error(res.message);
   }
-
-  if (questions.length <= 1) {
-    return {
-      answers: questions.map((q) =>
-        resolveSingleQuestionAnswer(q, answerText, normalizedSelectedInput),
-      ),
-    };
-  }
-
-  const segmentedText = extractPerQuestionTextSegments(answerText, questions);
-  const partitionedSelected = partitionSelectedOptionsByQuestion(questions, normalizedSelectedInput);
-
-  const answers: AskUserQuestionAnswerItem[] = questions.map((q, qIndex) => {
-    const qText = segmentedText?.get(qIndex) ?? (segmentedText ? "" : answerText);
-    const qSelected =
-      partitionedSelected?.get(qIndex) ?? (partitionedSelected ? [] : normalizedSelectedInput);
-    return resolveSingleQuestionAnswer(q, qText, qSelected);
-  });
-
-  return { answers };
+  return res.answer;
 }
 
 function parseShortSeqRef(ref: string): number | undefined {
@@ -1019,9 +726,7 @@ export class PendingStore {
   answerQuestion(
     pendingId: string,
     input: {
-      answerText?: string;
-      selectedOptions?: string[];
-      answers?: PerQuestionAnswerInput[];
+      answers: StructuredQuestionAnswerInput[];
     },
     userQuestionsProvider?:
       | DshUserQuestionsService
@@ -1036,12 +741,11 @@ export class PendingStore {
       };
     }
 
-    const answer = buildAskUserQuestionAnswer(
-      entry.questions,
-      input.answerText ?? "",
-      input.selectedOptions,
-      input.answers,
-    );
+    const validated = validateAndBuildQuestionAnswer(entry.questions, input.answers);
+    if (!validated.ok) {
+      return validated;
+    }
+    const { answer } = validated;
 
     if (entry.mode === "continued") {
       const userQuestionsService =

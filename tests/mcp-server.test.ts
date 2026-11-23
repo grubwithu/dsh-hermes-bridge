@@ -316,7 +316,7 @@ describe("BridgeMcpServer", () => {
       assert.equal(blockedPayload.code, "PENDING_QUESTION_EXISTS");
       assert.equal(followupIdle.length, 0);
 
-      // Answer the pending question properly (using short number "#2"), then send instruction to idle agent -> uses followup
+      // Answer the pending question properly (using short number "#2" and strict JSON schema), then send instruction to idle agent -> uses followup
       const answerResp = await rpcPost(
         baseUrl,
         {
@@ -325,7 +325,10 @@ describe("BridgeMcpServer", () => {
           method: "tools/call",
           params: {
             name: "dsh_answer_question",
-            arguments: { pendingId: "#2", answerText: "staging" },
+            arguments: {
+              pendingId: "#2",
+              answers: [{ questionIndex: 1, selected: [], custom: "staging" }],
+            },
           },
         },
         "secret-mcp-token",
@@ -461,7 +464,10 @@ describe("BridgeMcpServer", () => {
           method: "tools/call",
           params: {
             name: "dsh_answer_question",
-            arguments: { pendingId: "1", answerText: "Node Test" },
+            arguments: {
+              pendingId: "1",
+              answers: [{ questionIndex: 1, selected: ["B"] }],
+            },
           },
         },
         "token-strict",

@@ -424,7 +424,9 @@ describe("Event Listeners - AC-1 through AC-5", () => {
         ].join("\n"),
       );
 
-      const ansRes = store.answerQuestion("#1", { answerText: "A" });
+      const ansRes = store.answerQuestion("#1", {
+        answers: [{ questionIndex: 1, selected: ["A"] }],
+      });
       assert.equal(ansRes.ok, true);
       assert.deepEqual(await answerPromise, {
         answers: [{ id: "q1", selected: ["Unit"] }],
@@ -456,7 +458,9 @@ describe("Event Listeners - AC-1 through AC-5", () => {
       assert.equal(store.hasPendingQuestionForSession("sess_q"), true);
       const lateAns = store.answerQuestion(
         q2PendingId,
-        { answerText: "继续部署" },
+        {
+          answers: [{ questionIndex: 1, selected: [], custom: "继续部署" }],
+        },
         ctx.userQuestions,
       );
       assert.equal(lateAns.ok, true);
@@ -762,7 +766,12 @@ describe("Event Listeners - AC-1 through AC-5", () => {
       assert.equal(observedQuestionSignal.aborted, false);
 
       const qstId = captured[2]!.payload.pendingId!;
-      assert.equal(store.answerQuestion(qstId, { answerText: "是的" }).ok, true);
+      assert.equal(
+        store.answerQuestion(qstId, {
+          answers: [{ questionIndex: 1, selected: [], custom: "是的" }],
+        }).ok,
+        true,
+      );
       assert.deepEqual(await questionPromise, {
         answers: [{ id: "q1", selected: [], custom: "是的" }],
       });

@@ -171,6 +171,7 @@ export function apply(ctx: DshContext, rawConfig?: Partial<BridgeConfig>): Bridg
 export {
   PendingStore,
   buildAskUserQuestionAnswer,
+  validateAndBuildQuestionAnswer,
   optionIndexToLetter,
   formatQuestionOptionsInline,
   formatSingleQuestionBlock,

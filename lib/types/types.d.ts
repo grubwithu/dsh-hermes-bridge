@@ -114,11 +114,11 @@ export interface AskUserQuestionAnswerItem {
 export interface AskUserQuestionAnswer {
     answers: AskUserQuestionAnswerItem[];
 }
-export interface PerQuestionAnswerInput {
-    questionId?: string;
+export interface StructuredQuestionAnswerInput {
     questionIndex?: number;
-    answerText?: string;
-    selectedOptions?: string[];
+    id?: string;
+    selected: string[];
+    custom?: string;
 }
 export interface DshUserQuestionRequestEvent {
     questions: AskUserQuestionItem[];

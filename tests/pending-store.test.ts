@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { PendingStore, buildAskUserQuestionAnswer } from "../lib/pending-store.js";
+import {
+  PendingStore,
+  buildAskUserQuestionAnswer,
+  validateAndBuildQuestionAnswer,
+} from "../lib/pending-store.js";
 import type { AskUserQuestionItem, DshAgent } from "../lib/types.js";
 
 describe("PendingStore - approvals", () => {
@@ -145,13 +149,17 @@ describe("PendingStore - questions & stopped history", () => {
     },
   ];
 
-  it("matches selectedOptions, exact labels, and free-text custom answers", async () => {
-    const builtExact = buildAskUserQuestionAnswer(sampleQuestions, "postgresql");
-    assert.deepEqual(builtExact, {
+  it("validates strict JSON schema answers (option letters, exact labels, custom text, and error rejection)", async () => {
+    const builtByLetter = buildAskUserQuestionAnswer(sampleQuestions, [
+      { questionIndex: 1, selected: ["A"] },
+    ]);
+    assert.deepEqual(builtByLetter, {
       answers: [{ id: "db_choice", selected: ["PostgreSQL"] }],
     });
 
-    const builtCustom = buildAskUserQuestionAnswer(sampleQuestions, "用 DuckDB 做本地分析");
+    const builtCustom = buildAskUserQuestionAnswer(sampleQuestions, [
+      { questionIndex: 1, selected: [], custom: "用 DuckDB 做本地分析" },
+    ]);
     assert.deepEqual(builtCustom, {
       answers: [{ id: "db_choice", selected: [], custom: "用 DuckDB 做本地分析" }],
     });
@@ -164,58 +172,14 @@ describe("PendingStore - questions & stopped history", () => {
         options: [{ label: "Metrics" }, { label: "Tracing" }, { label: "Alerts" }],
       },
     ];
-    const builtMulti = buildAskUserQuestionAnswer(multiQuestions, "metrics, alerts");
+    const builtMulti = buildAskUserQuestionAnswer(multiQuestions, [
+      { questionIndex: 1, selected: ["A", "C"] },
+    ]);
     assert.deepEqual(builtMulti, {
       answers: [{ id: "features", selected: ["Metrics", "Alerts"] }],
     });
 
-    const approvalIntentQuestion: AskUserQuestionItem[] = [
-      {
-        id: "confirm",
-        question: "Allow plugin action?",
-        detail: "Write config",
-        options: [{ label: "Allow" }, { label: "Deny" }],
-        intent: { kind: "approval", approve: "Allow", reject: "Deny" },
-      },
-    ];
-    const builtIntent = buildAskUserQuestionAnswer(approvalIntentQuestion, "同意");
-    assert.deepEqual(builtIntent, {
-      answers: [{ id: "confirm", selected: ["Allow"] }],
-    });
-
-    // Option letters (A, B, C) & stripped "(推荐)" / "（推荐）" suffix matching
-    const recommendedQuestions: AskUserQuestionItem[] = [
-      {
-        id: "verify_q1",
-        question: "第一题（单选）：请选择一个选项。",
-        options: [
-          { label: "功能正常（推荐）" },
-          { label: "存在异常" },
-        ],
-      },
-    ];
-    // 1. Passing "功能正常" without "（推荐）" must match "功能正常（推荐）" instead of falling back to custom
-    assert.deepEqual(
-      buildAskUserQuestionAnswer(recommendedQuestions, "功能正常", ["功能正常"]),
-      {
-        answers: [{ id: "verify_q1", selected: ["功能正常（推荐）"] }],
-      },
-    );
-    // 2. Passing option letter "A" or "选B"
-    assert.deepEqual(
-      buildAskUserQuestionAnswer(recommendedQuestions, "A"),
-      {
-        answers: [{ id: "verify_q1", selected: ["功能正常（推荐）"] }],
-      },
-    );
-    assert.deepEqual(
-      buildAskUserQuestionAnswer(recommendedQuestions, "选B"),
-      {
-        answers: [{ id: "verify_q1", selected: ["存在异常"] }],
-      },
-    );
-
-    // 3. Multi-question prompt with single-select + multi-select
+    // Multi-question prompt with single-select + multi-select
     const twoQuestions: AskUserQuestionItem[] = [
       {
         id: "q_single",
@@ -238,7 +202,10 @@ describe("PendingStore - questions & stopped history", () => {
     ];
 
     assert.deepEqual(
-      buildAskUserQuestionAnswer(twoQuestions, "1选A，2选AC"),
+      buildAskUserQuestionAnswer(twoQuestions, [
+        { questionIndex: 1, selected: ["A"] },
+        { questionIndex: 2, selected: ["A", "C"] },
+      ]),
       {
         answers: [
           { id: "q_single", selected: ["功能正常（推荐）"] },
@@ -247,48 +214,28 @@ describe("PendingStore - questions & stopped history", () => {
       },
     );
 
-    assert.deepEqual(
-      buildAskUserQuestionAnswer(twoQuestions, "A，BC"),
-      {
-        answers: [
-          { id: "q_single", selected: ["功能正常（推荐）"] },
-          { id: "q_multi", selected: ["耗时合理", "需要优化"] },
-        ],
-      },
-    );
+    // Invalid option string in selected is rejected with INVALID_ANSWER_SCHEMA (NOT silently placed in custom!)
+    const badOption = validateAndBuildQuestionAnswer(twoQuestions, [
+      { questionIndex: 1, selected: ["功能正常"] },
+      { questionIndex: 2, selected: ["A"] },
+    ]);
+    assert.equal(badOption.ok, false);
+    if (!badOption.ok) {
+      assert.equal(badOption.code, "INVALID_ANSWER_SCHEMA");
+    }
 
-    assert.deepEqual(
-      buildAskUserQuestionAnswer(twoQuestions, "A AB"),
-      {
-        answers: [
-          { id: "q_single", selected: ["功能正常（推荐）"] },
-          { id: "q_multi", selected: ["日志清晰", "耗时合理"] },
-        ],
-      },
-    );
+    // Passing multiple options to a single-select question is rejected
+    const badMultiOnSingle = validateAndBuildQuestionAnswer(twoQuestions, [
+      { questionIndex: 1, selected: ["A", "B"] },
+      { questionIndex: 2, selected: ["A"] },
+    ]);
+    assert.equal(badMultiOnSingle.ok, false);
 
-    assert.deepEqual(
-      buildAskUserQuestionAnswer(twoQuestions, "", ["A", "A, B"]),
-      {
-        answers: [
-          { id: "q_single", selected: ["功能正常（推荐）"] },
-          { id: "q_multi", selected: ["日志清晰", "耗时合理"] },
-        ],
-      },
-    );
-
-    assert.deepEqual(
-      buildAskUserQuestionAnswer(twoQuestions, "", undefined, [
-        { questionIndex: 1, selectedOptions: ["功能正常"] },
-        { questionIndex: 2, selectedOptions: ["B", "C"] },
-      ]),
-      {
-        answers: [
-          { id: "q_single", selected: ["功能正常（推荐）"] },
-          { id: "q_multi", selected: ["耗时合理", "需要优化"] },
-        ],
-      },
-    );
+    // Passing wrong number of answers is rejected
+    const badCount = validateAndBuildQuestionAnswer(twoQuestions, [
+      { questionIndex: 1, selected: ["A"] },
+    ]);
+    assert.equal(badCount.ok, false);
   });
 
   it("resolves open and continued questions via PendingStore", async () => {
@@ -305,9 +252,9 @@ describe("PendingStore - questions & stopped history", () => {
       assert.equal(q1.shortId, "#1");
       assert.equal(store.hasPendingQuestionForSession("sess_q1"), true);
 
-      // Answer using shortId "#1"
+      // Answer using shortId "#1" and strict JSON schema
       const ans1 = store.answerQuestion("#1", {
-        answerText: "PostgreSQL",
+        answers: [{ questionIndex: 1, selected: ["A"] }],
       });
       assert.equal(ans1.ok, true);
       if (ans1.ok) {
@@ -340,7 +287,9 @@ describe("PendingStore - questions & stopped history", () => {
       let forwardedCall: { callId: string; selected: string[] } | undefined;
       const ans2 = store.answerQuestion(
         q2.pendingId,
-        { answerText: "SQLite", selectedOptions: ["SQLite"] },
+        {
+          answers: [{ questionIndex: 1, selected: ["B"] }],
+        },
         {
           answer(_agent, callId, answer) {
             forwardedCall = {

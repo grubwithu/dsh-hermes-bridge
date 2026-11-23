@@ -1,6 +1,6 @@
 ---
 name: dsh-bridge
-description: "DSH (DeepSeek Harness) Telegram bridge: use pendingId='#N' (e.g. '#1', '#5') directly with dsh_decide_approval and dsh_answer_question(pendingId, answerText) in 1 step without calling dsh_list_status first."
+description: "DSH (DeepSeek Harness) Telegram bridge: convert user replies to pending DSH questions strictly into dsh_answer_question({ pendingId: '#N', answers: [{ questionIndex: 1, selected: ['A'], custom?: '...' }] })."
 version: 0.1.0
 author: dsh-hermes-bridge
 license: MIT
@@ -48,12 +48,29 @@ metadata:
    * 第一步：先调用 `dsh_decide_approval({ pendingId, decision: "rejected", reason: "用户通过 Telegram 拒绝并改派方案" })`。
    * 第二步：再调用 `dsh_send_instruction({ sessionId, message: "<用户的新要求>" })` 把修改意见发给同一会话继续执行。
 
-4. **回答 DSH 的提问（`ask_user_question`）**（用户回复了选项字母或答案，如“A / 选A / 1选A，2选BC / A, BC / 红”）：
-   * **一步直调（禁止先查 `dsh_list_status` 或手凑完整标签）**：
-     * 直接从最近的提问消息中取短编号 `[#N]`，把用户的回复原样传给 `answerText` 即可：
-       `dsh_answer_question({ pendingId: "#5", answerText: "1选A，2选BC" })` 或 `dsh_answer_question({ pendingId: "#5", answerText: "A" })`。
-     * 插件服务端会自动在后台完成：选项字母（`A`/`B`/`C`、多选 `AB`/`A和C`）到原始 `label` 的映射、多道题自动切分（支持 `"1选A，2选BC"`、`"A; BC"`、`"A, BC"`、`"A B"`）、以及去掉 `（推荐）`/`（单选）` 后缀的模糊匹配。你**完全不需要**先调 `dsh_list_status` 去查 `qst_xxxx` 或查选项的完整文字标签。
-   * **重要安全约束**：只要某个会话存在挂起的提问，**严禁**对其直接调用 `dsh_send_instruction`（否则会触发 DSH 底层 `ASK_ABORTED` 导致提问异常中断）。如果 `dsh_send_instruction` 返回 `PENDING_QUESTION_EXISTS`，必须先通过 `dsh_answer_question` 完成作答。
+4. **回答 DSH 的提问（`ask_user_question`）——由你（LLM）严格转换为固定 JSON Schema**：
+   * 当用户的消息是针对某条 DSH 提问的回复时（无论用户说的是“选A”“选红色那个”“第一题选推荐的，第二题选后两个”还是自定义文字），**由你负责理解用户意图，并严格转换为以下固定 JSON Schema 调用 `dsh_answer_question`**：
+     ```json
+     {
+       "pendingId": "#5",
+       "answers": [
+         {
+           "questionIndex": 1,
+           "selected": ["A"]
+         },
+         {
+           "questionIndex": 2,
+           "selected": ["B", "C"]
+         }
+       ]
+     }
+     ```
+   * **固定 Schema 转换规则（强制）**：
+     * `pendingId`：直接传入提问消息开头的短编号（如 `"#5"`）。
+     * `answers`：必须包含与本次提问题目数量完全一致的元素（按题号 `questionIndex: 1, 2, ...` 排列）：
+       * 若用户选择了某个/某些预置选项：`selected` 数组中只填对应的**选项大写字母**（如单选 `["A"]`，多选 `["B", "C"]`），不要手抄带括号的中文标签。MCP 服务端会将字母 `"A"`、`"B"` 严格映射为 DSH 底层原始 `opt.label`。
+       * 若用户给出了选项之外的自定义回答（或该题无预置选项）：将 `selected` 设为 `[]`，并将用户的回答填入 `custom` 字段（即 `{ "questionIndex": 1, "selected": [], "custom": "用户的自定义回答" }`）。
+   * **重要安全约束**：只要某个会话存在挂起的提问，**严禁**对其直接调用 `dsh_send_instruction`（否则会触发 DSH 底层 `ASK_ABORTED` 导致提问异常中断）。如果 `dsh_send_instruction` 返回 `PENDING_QUESTION_EXISTS`，必须通过 `dsh_answer_question` 完成作答。
 
 5. **补充新指令或中止任务**：
    * 在没有挂起提问且无须拒绝当前审批的情况下，用户给出新任务要求时，调用 `dsh_send_instruction({ sessionId, message })`。
