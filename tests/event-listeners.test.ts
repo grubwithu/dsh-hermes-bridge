@@ -585,4 +585,142 @@ describe("Event Listeners - AC-1 through AC-5", () => {
       store.dispose();
     }
   });
+
+  it("aborts downstream Web UI signal when Hermes settles approval or question, while keeping original signal intact", async () => {
+    const ctx = new MockDshContext();
+    const store = new PendingStore();
+    const captured: CapturedRequest[] = [];
+    const webhook = new WebhookClient({
+      url: "http://127.0.0.1:8644/webhooks/dsh-events",
+      secret: "wh-secret-123",
+      logger: silentLogger,
+      fetchImpl: makeCapturingFetch(captured),
+    });
+
+    const dispose = registerEventListeners(ctx, makeConfig(), store, webhook, silentLogger);
+    try {
+      const session: DshSession = { id: "sess_dismiss", header: { id: "sess_dismiss", cwd: "/tmp/app" } };
+      const agent: DshAgent = { id: session.id, session, cancel: () => {} };
+
+      // 1. Approval with an active Turn AbortController: Hermes approval aborts downstream Web UI signal only
+      const turnController = new AbortController();
+      let observedApprovalSignal: AbortSignal | undefined;
+      let downstreamCancelled = false;
+
+      const removeWebApproval = ctx.on("approval/request", (req) => {
+        observedApprovalSignal = req.signal;
+        return new Promise<DshApprovalOutcome>((_resolve, reject) => {
+          req.signal?.addEventListener(
+            "abort",
+            () => {
+              downstreamCancelled = true;
+              reject(new Error("remote event cancelled"));
+            },
+            { once: true },
+          );
+        });
+      });
+
+      const approvalReq: DshApprovalRequestEvent = {
+        agent,
+        toolName: "bash",
+        signal: turnController.signal,
+      };
+      const approvalPromise = ctx.waterfall<DshApprovalOutcome>(
+        "approval/request",
+        approvalReq,
+        () => Promise.resolve("unavailable"),
+      );
+
+      await new Promise((r) => setTimeout(r, 15));
+      assert.ok(observedApprovalSignal);
+      assert.notEqual(observedApprovalSignal, turnController.signal);
+      assert.equal(observedApprovalSignal.aborted, false);
+
+      const aprId = captured[0]!.payload.pendingId!;
+      assert.equal(store.decideApproval(aprId, "allowed-once").ok, true);
+      assert.equal(await approvalPromise, "allowed-once");
+      await new Promise((r) => setTimeout(r, 5));
+
+      assert.equal(observedApprovalSignal.aborted, true);
+      assert.equal(downstreamCancelled, true);
+      assert.equal(turnController.signal.aborted, false);
+      assert.equal(approvalReq.signal, turnController.signal);
+      removeWebApproval();
+
+      // 2. Approval with no original signal: Web UI settles first -> downstream signal is NOT spuriously aborted
+      let observedSecondSignal: AbortSignal | undefined;
+      let resolveSecondWeb!: (outcome: DshApprovalOutcome) => void;
+      const removeSecondWeb = ctx.on("approval/request", (req) => {
+        observedSecondSignal = req.signal;
+        return new Promise<DshApprovalOutcome>((resolve) => {
+          resolveSecondWeb = resolve;
+        });
+      });
+
+      const approvalReqNoSig: DshApprovalRequestEvent = { agent, toolName: "bash" };
+      const approvalPromise2 = ctx.waterfall<DshApprovalOutcome>(
+        "approval/request",
+        approvalReqNoSig,
+        () => Promise.resolve("unavailable"),
+      );
+      await new Promise((r) => setTimeout(r, 15));
+      assert.ok(observedSecondSignal);
+      assert.equal(observedSecondSignal.aborted, false);
+      resolveSecondWeb("rejected");
+      assert.equal(await approvalPromise2, "rejected");
+      assert.equal(observedSecondSignal.aborted, false);
+      assert.equal("signal" in approvalReqNoSig, false);
+      removeSecondWeb();
+
+      // 3. Question settled by Hermes aborts downstream Web UI signal without triggering ASK_ABORTED
+      const qTurnController = new AbortController();
+      let observedQuestionSignal: AbortSignal | undefined;
+      let questionDownstreamCancelled = false;
+      const removeWebQuestion = ctx.on("user-questions/request", (req) => {
+        observedQuestionSignal = req.signal;
+        return new Promise<AskUserQuestionAnswer>((_resolve, reject) => {
+          req.signal?.addEventListener(
+            "abort",
+            () => {
+              questionDownstreamCancelled = true;
+              reject(new Error("remote question cancelled"));
+            },
+            { once: true },
+          );
+        });
+      });
+
+      const questionReq: DshUserQuestionRequestEvent = {
+        agent,
+        signal: qTurnController.signal,
+        questions: [{ id: "q1", question: "Continue?" }],
+      };
+      const questionPromise = ctx.waterfall<AskUserQuestionAnswer>(
+        "user-questions/request",
+        questionReq,
+        () => Promise.reject(new Error("NO_PROVIDER")),
+      );
+
+      await new Promise((r) => setTimeout(r, 15));
+      assert.ok(observedQuestionSignal);
+      assert.equal(observedQuestionSignal.aborted, false);
+
+      const qstId = captured[2]!.payload.pendingId!;
+      assert.equal(store.answerQuestion(qstId, { answerText: "是的" }).ok, true);
+      assert.deepEqual(await questionPromise, {
+        answers: [{ id: "q1", selected: [], custom: "是的" }],
+      });
+      await new Promise((r) => setTimeout(r, 5));
+
+      assert.equal(observedQuestionSignal.aborted, true);
+      assert.equal(questionDownstreamCancelled, true);
+      assert.equal(qTurnController.signal.aborted, false);
+      assert.equal(questionReq.signal, qTurnController.signal);
+      removeWebQuestion();
+    } finally {
+      dispose();
+      store.dispose();
+    }
+  });
 });

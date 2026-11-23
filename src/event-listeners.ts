@@ -274,6 +274,54 @@ function makeAbortError(signal: AbortSignal, fallbackMessage: string): Error {
   return err;
 }
 
+function attachDownstreamAbortSignal<T extends { signal?: AbortSignal }>(req: T): {
+  originalSignal: AbortSignal | undefined;
+  downstreamController: AbortController;
+  restore: () => void;
+} {
+  const originalSignal = req.signal;
+  const hasOwnSignal = Object.prototype.hasOwnProperty.call(req, "signal");
+  const downstreamController = new AbortController();
+  const downstreamSignal = originalSignal
+    ? AbortSignal.any([originalSignal, downstreamController.signal])
+    : downstreamController.signal;
+
+  const descriptor = Object.getOwnPropertyDescriptor(req, "signal");
+  const canMutateSignal =
+    !Object.isFrozen(req) &&
+    (descriptor === undefined || (descriptor.writable === true && descriptor.configurable === true));
+
+  if (canMutateSignal) {
+    (req as { signal?: AbortSignal }).signal = downstreamSignal;
+  }
+
+  let restored = false;
+  const restore = () => {
+    if (restored || !canMutateSignal) {
+      return;
+    }
+    restored = true;
+    if (hasOwnSignal) {
+      (req as { signal?: AbortSignal }).signal = originalSignal;
+    } else {
+      delete (req as { signal?: AbortSignal }).signal;
+    }
+  };
+
+  return { originalSignal, downstreamController, restore };
+}
+
+function invokeNextSafely<T>(next: () => Promise<T>, onFinally: () => void): Promise<T> {
+  let promise: Promise<T>;
+  try {
+    promise = Promise.resolve(next());
+  } catch (err) {
+    onFinally();
+    return Promise.reject(err);
+  }
+  return promise.finally(onFinally);
+}
+
 function setBoundedCache<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number): void {
   if (map.has(key)) {
     map.delete(key);
@@ -389,32 +437,33 @@ export function registerEventListeners(
           },
         });
 
+        const { originalSignal, downstreamController, restore } = attachDownstreamAbortSignal(req);
+
         // Wrap next() so that 'unavailable' (e.g. no browser client attached) does NOT
         // short-circuit the race before Hermes can respond.
+        const nextPromise = invokeNextSafely<DshApprovalOutcome>(next, restore);
         const nextWinner = new Promise<DshApprovalOutcome>((resolve) => {
-          Promise.resolve()
-            .then(() => next())
-            .then(
-              (outcome) => {
-                if (outcome === "allowed-once" || outcome === "rejected" || outcome === "cancelled") {
-                  resolve(outcome);
-                }
-              },
-              () => {
-                // Downstream threw: ignore and keep waiting for Hermes / abort / timeout
-              },
-            );
+          nextPromise.then(
+            (outcome) => {
+              if (outcome === "allowed-once" || outcome === "rejected" || outcome === "cancelled") {
+                resolve(outcome);
+              }
+            },
+            () => {
+              // Downstream threw or was cancelled after Hermes settled: keep waiting for Hermes / abort / timeout
+            },
+          );
         });
 
         let onAbort: (() => void) | undefined;
         const signalWinner = new Promise<DshApprovalOutcome>((resolve) => {
-          if (!req.signal) return;
-          if (req.signal.aborted) {
+          if (!originalSignal) return;
+          if (originalSignal.aborted) {
             resolve("cancelled");
             return;
           }
           onAbort = () => resolve("cancelled");
-          req.signal.addEventListener("abort", onAbort, { once: true });
+          originalSignal.addEventListener("abort", onAbort, { once: true });
         });
 
         try {
@@ -424,14 +473,16 @@ export function registerEventListeners(
             signalWinner.then((outcome) => ({ source: "signal" as const, outcome })),
           ]);
 
-          if (result.source !== "hermes") {
+          if (result.source === "hermes") {
+            downstreamController.abort(new Error(`Approval ${pendingId} settled via Hermes bridge`));
+          } else {
             store.settleApprovalExternally(pendingId, result.outcome);
           }
 
           return result.outcome;
         } finally {
-          if (onAbort && req.signal) {
-            req.signal.removeEventListener("abort", onAbort);
+          if (onAbort && originalSignal) {
+            originalSignal.removeEventListener("abort", onAbort);
           }
         }
       },
@@ -488,33 +539,33 @@ export function registerEventListeners(
           },
         });
 
+        const { originalSignal, downstreamController, restore } = attachDownstreamAbortSignal(request);
+
         // Downstream next(): only resolve if a UI answerer returns an actual answer.
         // Rejections like NO_PROVIDER (when no browser tab is open) must NOT abort Hermes!
+        const nextPromise = invokeNextSafely<AskUserQuestionAnswer>(next, restore);
         const nextWinner = new Promise<{ source: "next"; answer: AskUserQuestionAnswer }>((resolve) => {
-          Promise.resolve()
-            .then(() => next())
-            .then(
-              (answer) => {
-                if (answer && Array.isArray(answer.answers)) {
-                  resolve({ source: "next", answer });
-                }
-              },
-              () => {
-                // Ignore NO_PROVIDER or downstream absence so Hermes can answer
-              },
-            );
+          nextPromise.then(
+            (answer) => {
+              if (answer && Array.isArray(answer.answers)) {
+                resolve({ source: "next", answer });
+              }
+            },
+            () => {
+              // Ignore NO_PROVIDER, downstream absence, or cancel after Hermes settled
+            },
+          );
         });
 
         let onAbort: (() => void) | undefined;
         const signalWinner = new Promise<{ source: "signal"; reason: unknown }>((resolve) => {
-          const signal = request.signal;
-          if (!signal) return;
-          if (signal.aborted) {
-            resolve({ source: "signal", reason: signal.reason });
+          if (!originalSignal) return;
+          if (originalSignal.aborted) {
+            resolve({ source: "signal", reason: originalSignal.reason });
             return;
           }
-          onAbort = () => resolve({ source: "signal", reason: signal.reason });
-          signal.addEventListener("abort", onAbort, { once: true });
+          onAbort = () => resolve({ source: "signal", reason: originalSignal.reason });
+          originalSignal.addEventListener("abort", onAbort, { once: true });
         });
 
         try {
@@ -525,6 +576,7 @@ export function registerEventListeners(
           ]);
 
           if (winner.source === "hermes") {
+            downstreamController.abort(new Error(`Question ${pendingId} answered via Hermes bridge`));
             return winner.answer;
           }
 
@@ -545,16 +597,23 @@ export function registerEventListeners(
             const abortErr =
               reason instanceof Error
                 ? reason
-                : makeAbortError(request.signal!, "ask_user_question aborted");
+                : makeAbortError(originalSignal!, "ask_user_question aborted");
             store.settleQuestionExternally(pendingId, abortErr);
           }
 
           throw reason instanceof Error
             ? reason
-            : makeAbortError(request.signal!, "ask_user_question aborted");
+            : makeAbortError(originalSignal!, "ask_user_question aborted");
+        } catch (err) {
+          if (!originalSignal?.aborted && !downstreamController.signal.aborted) {
+            downstreamController.abort(
+              err instanceof Error ? err : new Error("Question settled via Hermes bridge"),
+            );
+          }
+          throw err;
         } finally {
-          if (onAbort && request.signal) {
-            request.signal.removeEventListener("abort", onAbort);
+          if (onAbort && originalSignal) {
+            originalSignal.removeEventListener("abort", onAbort);
           }
         }
       },
