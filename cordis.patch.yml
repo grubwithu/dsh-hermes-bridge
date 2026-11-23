@@ -1,0 +1,13 @@
+- insert:
+    - id: dsh-hermes-bridge
+      name: dsh-hermes-bridge
+      config:
+        mcpHost: "127.0.0.1"
+        mcpPort: 8790
+        mcpAuthToken: ""
+        hermesWebhookUrl: "http://127.0.0.1:8644/webhooks/dsh-events"
+        hermesWebhookSecret: ""
+        approvalTimeoutMs: 300000
+        questionTimeoutMs: 1800000
+        notifyOnTurnEndMinDurationMs: 10000
+        errorDebounceMs: 60000

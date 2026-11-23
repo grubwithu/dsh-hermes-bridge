@@ -1,0 +1,57 @@
+# Hermes Agent 配置片段（合并到 ~/.hermes/config.yaml）
+# 注意：
+# 1. 请先运行 ./scripts/setup-hermes.sh 生成随机密钥并软链 Skill
+# 2. 如果你的 ~/.hermes/config.yaml 中平台配置放在 gateway.platforms 下，请将 platforms.webhook 合并至对应位置
+# 3. 修改后请重启 Hermes Gateway（如 hermes gateway restart）使 Webhook 与 MCP 配置生效
+
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      host: "127.0.0.1"
+      port: 8644
+      rate_limit: 60
+      routes:
+        dsh-events:
+          # 与 DSH 插件 config.hermesWebhookSecret / DSH_HERMES_WEBHOOK_SECRET 保持一致
+          secret: "<replace-with-DSH_HERMES_WEBHOOK_SECRET>"
+          events:
+            - "paused_approval"
+            - "paused_question"
+            - "interrupted_error"
+            - "stopped"
+          deliver: "telegram"
+          # 必须开启，确保推送给用户的纯文字通知写入 Telegram 会话历史，用户直接回复时 Hermes 拥有完整上下文
+          mirror_to_session: true
+
+          # ------------------------------------------------------------------
+          # 模式 A：省 Token 直推模式（默认推荐）
+          # 不经过 Hermes LLM，直接用模板渲染为自然语言纯文字推送到 Telegram
+          # ------------------------------------------------------------------
+          deliver_only: true
+          prompt: "DSH 那边「{taskTitle}」现在处于「{stateLabel}」状态：{summary}"
+
+          # ------------------------------------------------------------------
+          # 模式 B：智能润色模式（可选）
+          # 若希望 Hermes 收到事件后主动调用 LLM 润色并附带简短风险提示：
+          # 1. 将上方 deliver_only: true 改为 false
+          # 2. 取消下方 skills 与 prompt 注释，并注释掉模式 A 的 prompt
+          # ------------------------------------------------------------------
+          # deliver_only: false
+          # skills:
+          #   - "dsh-bridge"
+          # prompt: |
+          #   收到 DSH 状态事件，请用一两句简洁自然的中文纯文字向用户汇报当前状态、核心影响与下一步建议（不要使用编号列表、表格或任何斜杠命令）：
+          #   任务名：{taskTitle}
+          #   状态：{stateLabel}（{state}）
+          #   摘要：{summary}
+          #   详情：{details}
+
+mcp_servers:
+  dsh_bridge:
+    url: "http://127.0.0.1:8790/mcp"
+    headers:
+      # 与 DSH 插件 config.mcpAuthToken / DSH_HERMES_MCP_TOKEN 保持一致
+      Authorization: "Bearer <replace-with-DSH_HERMES_MCP_TOKEN>"
+    timeout: 60
+    connect_timeout: 30
