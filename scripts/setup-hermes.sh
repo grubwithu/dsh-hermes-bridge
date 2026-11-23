@@ -109,9 +109,21 @@ mcp_servers:
 EOF
 echo
 
-echo "=== 本地开发挂载示例（DSH --patch） ==="
+echo "=== DSH 安装 / 挂载示例 ==="
 cat <<EOF
-dsh --profile web --patch ${REPO_ROOT}/cordis.patch.yml
+# 方式 1：作为 Bundle 安装到 DSH Profile（推荐，先在仓库提交 lib/ 并推送 GitHub，或本地 npm pack）
+dsh plugin --profile web add "github:grubwithu/dsh-hermes-bridge#main"
+# 或本地打包安装：
+#   cd ${REPO_ROOT} && npm run build && npm pack
+#   dsh plugin --profile web add ${REPO_ROOT}/dsh-hermes-bridge-0.1.0.tgz
+
+# 方式 2：未安装时的本地 --patch 临时调试（将 name 指向构建产物路径）
+#   cat <<'PATCH' > ${REPO_ROOT}/dev-patch.local.yml
+#   - insert:
+#       - id: dsh-hermes-bridge
+#         name: ${REPO_ROOT}/lib/index.js
+#   PATCH
+#   dsh --profile web --patch ${REPO_ROOT}/dev-patch.local.yml
 EOF
 echo
 

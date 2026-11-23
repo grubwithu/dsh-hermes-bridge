@@ -45,7 +45,7 @@ npm run build
 npm test
 ```
 
-> 所有 `@deepseek-ai/*` 宿主包仅声明在 `peerDependencies`，且插件核心实现不依赖外部第三方运行时包，避免 Dual-Package Hazard。
+> 所有 `@deepseek-ai/*` 宿主包仅声明在 `peerDependencies`，且核心代码不引入运行时第三方包，避免 Dual-Package Hazard；同时 `lib/` 构建产物会提交到 Git 仓库，确保通过 `dsh plugin add "github:..."` 安装时即便宿主 `pnpm` 默认跳过构建脚本（`allowBuilds`）也能直接加载入口。
 
 ### 2. 配置 Hermes 侧（Skill + Webhook + MCP）
 
@@ -65,21 +65,47 @@ npm test
 
 ### 3. 挂载到 DSH
 
-* **本地开发调试**（推荐，避免重复 id 冲突）：
+先在 DSH 运行环境中设置共享密钥（例如写入 `~/.dsh/.env`，或在 Profile 的 `cordis.patch.yml` 中按 `id: dsh-hermes-bridge` 覆写 `config`）：
+
+```bash
+export DSH_HERMES_MCP_TOKEN="<与 Hermes mcp_servers.dsh_bridge 一致>"
+export DSH_HERMES_WEBHOOK_SECRET="<与 Hermes webhook secret 一致>"
+```
+
+* **方式 A：从 GitHub 直接安装到 Profile（推荐）**：
 
   ```bash
-  export DSH_HERMES_MCP_TOKEN="<与 Hermes mcp_servers.dsh_bridge 一致>"
-  export DSH_HERMES_WEBHOOK_SECRET="<与 Hermes webhook secret 一致>"
-  dsh --profile web --patch ./cordis.patch.yml
+  dsh plugin --profile web add "github:grubwithu/dsh-hermes-bridge#main"
   ```
 
-* **作为 Bundle 安装到 Profile**：
+* **方式 B：本地打包 `.tgz` 安装到 Profile**：
 
   ```bash
-  dsh plugin --profile web add /mnt/hd/users/grub/dsh-hermes-bridge
+  npm run build && npm pack
+  dsh plugin --profile web add /mnt/hd/users/grub/dsh-hermes-bridge/dsh-hermes-bridge-0.1.0.tgz
   ```
 
   > 注意：通过 `dsh plugin add` 安装带 `dsh.bundle.patch` 的插件后，无需再在 Profile 的 `cordis.patch.yml` 中重复 `- insert: id: dsh-hermes-bridge`，否则会触发 `duplicate loader entry id`。若需覆盖默认配置（如设置密钥），仅按 `- id: dsh-hermes-bridge` 覆写 `config` 字段即可。
+
+* **方式 C：未安装时的本地临时 `--patch` 调试**：
+
+  [cordis.patch.yml](cordis.patch.yml) 中的 `name: dsh-hermes-bridge` 仅在安装进 Profile 后通过包名解析；若未执行 `dsh plugin add` 而直接临时调试，请新建一份本地 `dev-patch.local.yml`（已被 `.gitignore` 忽略），将 `name` 指向构建产物绝对路径：
+
+  ```yaml
+  - insert:
+      - id: dsh-hermes-bridge
+        name: /mnt/hd/users/grub/dsh-hermes-bridge/lib/index.js
+        config:
+          mcpHost: "127.0.0.1"
+          mcpPort: 8790
+          hermesWebhookUrl: "http://127.0.0.1:8644/webhooks/dsh-events"
+  ```
+
+  然后启动：
+
+  ```bash
+  dsh --profile web --patch ./dev-patch.local.yml
+  ```
 
 ---
 

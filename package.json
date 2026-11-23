@@ -21,6 +21,9 @@
     "scripts",
     "README.md"
   ],
+  "engines": {
+    "dsh": ">=0.2.0"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -29,6 +32,8 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "prepare": "node --input-type=commonjs -e \"const fs=require('node:fs'),cp=require('node:child_process'); if(fs.existsSync('node_modules/.bin/tsc')){cp.execSync('npm run build',{stdio:'inherit'});}else if(!fs.existsSync('lib/index.js')){console.error('Missing lib/index.js and tsc is unavailable');process.exit(1);}\"",
     "test": "tsc -p tsconfig.json && node --test tests/*.test.ts"
   },
   "peerDependencies": {
