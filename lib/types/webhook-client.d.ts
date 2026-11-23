@@ -1,5 +1,7 @@
 import type { BridgeEventState, BridgeLogger, BridgeWebhookPayload } from "./types.js";
 export interface WebhookEventInput {
+    seqNo?: number;
+    shortId?: string;
     sessionId: string;
     taskTitle: string;
     cwd: string;

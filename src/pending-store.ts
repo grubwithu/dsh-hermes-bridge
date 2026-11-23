@@ -38,6 +38,8 @@ export interface AddQuestionInput {
 
 interface PendingApprovalEntry {
   pendingId: string;
+  seqNo: number;
+  shortId: string;
   sessionId: string;
   taskTitle: string;
   cwd: string;
@@ -54,6 +56,8 @@ interface PendingApprovalEntry {
 
 interface PendingQuestionEntry {
   pendingId: string;
+  seqNo: number;
+  shortId: string;
   sessionId: string;
   taskTitle: string;
   cwd: string;
@@ -73,6 +77,8 @@ export type DecideApprovalResult =
   | {
       ok: true;
       pendingId: string;
+      seqNo: number;
+      shortId: string;
       sessionId: string;
       decision: ApprovalDecision;
       dshOutcome: "allowed-once" | "rejected";
@@ -87,6 +93,8 @@ export type AnswerQuestionResult =
   | {
       ok: true;
       pendingId: string;
+      seqNo: number;
+      shortId: string;
       sessionId: string;
       mode: "open" | "continued";
       answer: AskUserQuestionAnswer;
@@ -246,15 +254,69 @@ export function buildAskUserQuestionAnswer(
   return { answers };
 }
 
+function parseShortSeqRef(ref: string): number | undefined {
+  const match = /^(?:#|no\.?\s*|编号\s*|apr_|qst_)?0*([1-9]\d*)$/i.exec(ref.trim());
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const n = Number(match[1]);
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
+
 export class PendingStore {
   private readonly approvals = new Map<string, PendingApprovalEntry>();
   private readonly questions = new Map<string, PendingQuestionEntry>();
   private readonly sessionAutoApproved = new Set<string>();
   private readonly recentStopped: RecentStoppedView[] = [];
+  private seqCounter = 0;
   private disposed = false;
+
+  nextShortId(): { seqNo: number; shortId: string } {
+    this.seqCounter += 1;
+    return {
+      seqNo: this.seqCounter,
+      shortId: `#${this.seqCounter}`,
+    };
+  }
+
+  private findApprovalEntry(ref: string): PendingApprovalEntry | undefined {
+    const trimmed = ref.trim();
+    const direct = this.approvals.get(trimmed);
+    if (direct && !direct.settled) {
+      return direct;
+    }
+    const seqNo = parseShortSeqRef(trimmed);
+    if (seqNo !== undefined) {
+      for (const entry of this.approvals.values()) {
+        if (!entry.settled && entry.seqNo === seqNo) {
+          return entry;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private findQuestionEntry(ref: string): PendingQuestionEntry | undefined {
+    const trimmed = ref.trim();
+    const direct = this.questions.get(trimmed);
+    if (direct && !direct.settled) {
+      return direct;
+    }
+    const seqNo = parseShortSeqRef(trimmed);
+    if (seqNo !== undefined) {
+      for (const entry of this.questions.values()) {
+        if (!entry.settled && entry.seqNo === seqNo) {
+          return entry;
+        }
+      }
+    }
+    return undefined;
+  }
 
   addApproval(input: AddApprovalInput): {
     pendingId: string;
+    seqNo: number;
+    shortId: string;
     promise: Promise<DshApprovalOutcome>;
     expiresAt: string;
     view: PendingApprovalView;
@@ -262,10 +324,14 @@ export class PendingStore {
     if (this.disposed) {
       return {
         pendingId: "apr_disposed",
+        seqNo: 0,
+        shortId: "#0",
         promise: Promise.resolve("rejected"),
         expiresAt: new Date().toISOString(),
         view: {
           pendingId: "apr_disposed",
+          seqNo: 0,
+          shortId: "#0",
           sessionId: input.sessionId,
           taskTitle: input.taskTitle,
           cwd: input.cwd,
@@ -280,6 +346,7 @@ export class PendingStore {
     }
 
     const pendingId = generateShortId("apr", this.approvals);
+    const { seqNo, shortId } = this.nextShortId();
     const now = Date.now();
     const createdAt = new Date(now).toISOString();
     const expiresAt = new Date(now + input.timeoutMs).toISOString();
@@ -304,6 +371,8 @@ export class PendingStore {
 
     const entry: PendingApprovalEntry = {
       pendingId,
+      seqNo,
+      shortId,
       sessionId: input.sessionId,
       taskTitle: input.taskTitle,
       cwd: input.cwd,
@@ -321,6 +390,8 @@ export class PendingStore {
     this.approvals.set(pendingId, entry);
     return {
       pendingId,
+      seqNo,
+      shortId,
       promise,
       expiresAt,
       view: this.toApprovalView(entry),
@@ -328,7 +399,7 @@ export class PendingStore {
   }
 
   decideApproval(pendingId: string, decision: ApprovalDecision): DecideApprovalResult {
-    const entry = this.approvals.get(pendingId);
+    const entry = this.findApprovalEntry(pendingId);
     if (!entry || entry.settled) {
       return {
         ok: false,
@@ -339,7 +410,7 @@ export class PendingStore {
 
     entry.settled = true;
     clearTimeout(entry.timer);
-    this.approvals.delete(pendingId);
+    this.approvals.delete(entry.pendingId);
 
     if (decision === "allowed-session") {
       this.sessionAutoApproved.add(entry.sessionId);
@@ -351,7 +422,9 @@ export class PendingStore {
 
     return {
       ok: true,
-      pendingId,
+      pendingId: entry.pendingId,
+      seqNo: entry.seqNo,
+      shortId: entry.shortId,
       sessionId: entry.sessionId,
       decision,
       dshOutcome,
@@ -359,13 +432,13 @@ export class PendingStore {
   }
 
   settleApprovalExternally(pendingId: string, outcome: DshApprovalOutcome = "cancelled"): boolean {
-    const entry = this.approvals.get(pendingId);
+    const entry = this.findApprovalEntry(pendingId);
     if (!entry || entry.settled) {
       return false;
     }
     entry.settled = true;
     clearTimeout(entry.timer);
-    this.approvals.delete(pendingId);
+    this.approvals.delete(entry.pendingId);
     entry.resolve(outcome);
     return true;
   }
@@ -390,6 +463,8 @@ export class PendingStore {
 
   addQuestion(input: AddQuestionInput): {
     pendingId: string;
+    seqNo: number;
+    shortId: string;
     promise: Promise<AskUserQuestionAnswer>;
     expiresAt: string;
     view: PendingQuestionView;
@@ -400,10 +475,14 @@ export class PendingStore {
       rejected.catch(() => {});
       return {
         pendingId: "qst_disposed",
+        seqNo: 0,
+        shortId: "#0",
         promise: rejected,
         expiresAt: new Date().toISOString(),
         view: {
           pendingId: "qst_disposed",
+          seqNo: 0,
+          shortId: "#0",
           sessionId: input.sessionId,
           taskTitle: input.taskTitle,
           cwd: input.cwd,
@@ -419,6 +498,7 @@ export class PendingStore {
     }
 
     const pendingId = generateShortId("qst", this.questions);
+    const { seqNo, shortId } = this.nextShortId();
     const now = Date.now();
     const createdAt = new Date(now).toISOString();
     const expiresAt = new Date(now + input.timeoutMs).toISOString();
@@ -447,6 +527,8 @@ export class PendingStore {
 
     const entry: PendingQuestionEntry = {
       pendingId,
+      seqNo,
+      shortId,
       sessionId: input.sessionId,
       taskTitle: input.taskTitle,
       cwd: input.cwd,
@@ -464,6 +546,8 @@ export class PendingStore {
     this.questions.set(pendingId, entry);
     return {
       pendingId,
+      seqNo,
+      shortId,
       promise,
       expiresAt,
       view: this.toQuestionView(entry),
@@ -471,7 +555,7 @@ export class PendingStore {
   }
 
   markQuestionContinued(pendingId: string, agent: DshAgent, callId: string): boolean {
-    const entry = this.questions.get(pendingId);
+    const entry = this.findQuestionEntry(pendingId);
     if (!entry || entry.settled) {
       return false;
     }
@@ -484,9 +568,11 @@ export class PendingStore {
   answerQuestion(
     pendingId: string,
     input: { answerText: string; selectedOptions?: string[] },
-    userQuestionsService?: DshUserQuestionsService,
+    userQuestionsProvider?:
+      | DshUserQuestionsService
+      | (() => DshUserQuestionsService | undefined),
   ): AnswerQuestionResult {
-    const entry = this.questions.get(pendingId);
+    const entry = this.findQuestionEntry(pendingId);
     if (!entry || entry.settled) {
       return {
         ok: false,
@@ -502,11 +588,16 @@ export class PendingStore {
     );
 
     if (entry.mode === "continued") {
+      const userQuestionsService =
+        typeof userQuestionsProvider === "function"
+          ? userQuestionsProvider()
+          : userQuestionsProvider;
+
       if (!userQuestionsService || !entry.agent || !entry.callId) {
         return {
           ok: false,
           code: "USER_QUESTIONS_UNAVAILABLE",
-          message: `Question "${pendingId}" transitioned to continued mode, but ctx.userQuestions or agent handle is unavailable.`,
+          message: `Question "${entry.pendingId}" (${entry.shortId}) transitioned to continued mode, but ctx.userQuestions or agent handle is unavailable.`,
         };
       }
 
@@ -514,17 +605,19 @@ export class PendingStore {
         const accepted = userQuestionsService.answer(entry.agent, entry.callId, answer);
         entry.settled = true;
         clearTimeout(entry.timer);
-        this.questions.delete(pendingId);
+        this.questions.delete(entry.pendingId);
         if (!accepted) {
           return {
             ok: false,
             code: "EXPIRED_OR_RESTARTED",
-            message: `Continued question "${pendingId}" was already answered or cancelled on DSH.`,
+            message: `Continued question "${entry.pendingId}" (${entry.shortId}) was already answered or cancelled on DSH.`,
           };
         }
         return {
           ok: true,
-          pendingId,
+          pendingId: entry.pendingId,
+          seqNo: entry.seqNo,
+          shortId: entry.shortId,
           sessionId: entry.sessionId,
           mode: "continued",
           answer,
@@ -540,12 +633,14 @@ export class PendingStore {
 
     entry.settled = true;
     clearTimeout(entry.timer);
-    this.questions.delete(pendingId);
+    this.questions.delete(entry.pendingId);
     entry.resolve(answer);
 
     return {
       ok: true,
-      pendingId,
+      pendingId: entry.pendingId,
+      seqNo: entry.seqNo,
+      shortId: entry.shortId,
       sessionId: entry.sessionId,
       mode: "open",
       answer,
@@ -553,18 +648,18 @@ export class PendingStore {
   }
 
   settleQuestionExternally(pendingId: string, reason?: Error): boolean {
-    const entry = this.questions.get(pendingId);
+    const entry = this.findQuestionEntry(pendingId);
     if (!entry || entry.settled) {
       return false;
     }
     entry.settled = true;
     clearTimeout(entry.timer);
-    this.questions.delete(pendingId);
+    this.questions.delete(entry.pendingId);
     if (entry.mode === "open") {
       if (reason) {
         entry.reject(reason);
       } else {
-        entry.reject(new Error(`Question ${pendingId} settled externally`));
+        entry.reject(new Error(`Question ${entry.pendingId} settled externally`));
       }
     }
     return true;
@@ -660,6 +755,8 @@ export class PendingStore {
   private toApprovalView(entry: PendingApprovalEntry): PendingApprovalView {
     return {
       pendingId: entry.pendingId,
+      seqNo: entry.seqNo,
+      shortId: entry.shortId,
       sessionId: entry.sessionId,
       taskTitle: entry.taskTitle,
       cwd: entry.cwd,
@@ -675,6 +772,8 @@ export class PendingStore {
   private toQuestionView(entry: PendingQuestionEntry): PendingQuestionView {
     return {
       pendingId: entry.pendingId,
+      seqNo: entry.seqNo,
+      shortId: entry.shortId,
       sessionId: entry.sessionId,
       taskTitle: entry.taskTitle,
       cwd: entry.cwd,

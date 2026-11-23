@@ -16,11 +16,16 @@ describe("PendingStore - approvals", () => {
         timeoutMs: 5_000,
       });
       assert.match(a1.pendingId, /^apr_[0-9a-f]+$/);
+      assert.equal(a1.seqNo, 1);
+      assert.equal(a1.shortId, "#1");
+      assert.equal(store.listApprovals()[0]?.shortId, "#1");
       assert.equal(store.listApprovals().length, 1);
 
-      const d1 = store.decideApproval(a1.pendingId, "allowed-once");
+      // Decide using shortId "#1"
+      const d1 = store.decideApproval("#1", "allowed-once");
       assert.equal(d1.ok, true);
       if (d1.ok) {
+        assert.equal(d1.pendingId, a1.pendingId);
         assert.equal(d1.dshOutcome, "allowed-once");
       }
       assert.equal(await a1.promise, "allowed-once");
@@ -35,9 +40,12 @@ describe("PendingStore - approvals", () => {
         argumentsPreview: "ls -la",
         timeoutMs: 5_000,
       });
-      const d2 = store.decideApproval(a2.pendingId, "allowed-session");
+      assert.equal(a2.shortId, "#2");
+      // Decide using bare number "2"
+      const d2 = store.decideApproval("2", "allowed-session");
       assert.equal(d2.ok, true);
       if (d2.ok) {
+        assert.equal(d2.pendingId, a2.pendingId);
         assert.equal(d2.dshOutcome, "allowed-once");
       }
       assert.equal(await a2.promise, "allowed-once");
@@ -187,13 +195,16 @@ describe("PendingStore - questions & stopped history", () => {
         timeoutMs: 5_000,
       });
       assert.match(q1.pendingId, /^qst_[0-9a-f]+$/);
+      assert.equal(q1.shortId, "#1");
       assert.equal(store.hasPendingQuestionForSession("sess_q1"), true);
 
-      const ans1 = store.answerQuestion(q1.pendingId, {
+      // Answer using shortId "#1"
+      const ans1 = store.answerQuestion("#1", {
         answerText: "PostgreSQL",
       });
       assert.equal(ans1.ok, true);
       if (ans1.ok) {
+        assert.equal(ans1.pendingId, q1.pendingId);
         assert.equal(ans1.mode, "open");
       }
       assert.deepEqual(await q1.promise, {

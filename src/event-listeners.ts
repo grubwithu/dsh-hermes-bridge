@@ -7,11 +7,33 @@ import type {
   DshContext,
   DshSession,
   DshSessionEvent,
+  DshSessionTitleService,
   AskUserQuestionAnswer,
   AskUserQuestionItem,
 } from "./types.js";
 import type { PendingStore } from "./pending-store.js";
 import type { WebhookClient } from "./webhook-client.js";
+
+export function getOptionalService<T>(
+  ctx: DshContext,
+  key: "userQuestions" | "sessionTitle" | "agents" | "sessions",
+): T | undefined {
+  if (typeof ctx.get === "function") {
+    try {
+      const svc = ctx.get<T>(key);
+      if (svc !== undefined) {
+        return svc;
+      }
+    } catch {
+      // Fall through to property lookup
+    }
+  }
+  try {
+    return (ctx as unknown as Record<string, T | undefined>)[key];
+  } catch {
+    return undefined;
+  }
+}
 
 const MAX_TOOL_CALL_CACHE = 500;
 const MAX_ARG_PREVIEW_CHARS = 300;
@@ -106,12 +128,9 @@ export function resolveSessionMeta(
   const sessionId = session.id;
   const cwd = session.header?.cwd ?? "";
 
-  let titleFromService: string | undefined;
-  try {
-    titleFromService = ctx.sessionTitle?.get(session)?.title;
-  } catch {
-    titleFromService = undefined;
-  }
+  const titleFromService = getOptionalService<DshSessionTitleService>(ctx, "sessionTitle")
+    ?.get(session)
+    ?.title;
 
   const candidateTitle =
     titleFromService?.trim() ||
@@ -363,14 +382,19 @@ export function registerEventListeners(
     }
     caches.errorLastSentAt.set(debounceKey, now);
 
+    const { seqNo, shortId } = store.nextShortId();
+
     void webhook.send({
+      seqNo,
+      shortId,
       sessionId: meta.sessionId,
       taskTitle: meta.taskTitle,
       cwd: meta.cwd,
       state: "interrupted_error",
       stateLabel: "异常中断",
-      summary: classified.summary,
+      summary: `[${shortId}] ${classified.summary}`,
       details: {
+        shortId,
         code: classified.code,
         ...(classified.status !== undefined ? { status: classified.status } : {}),
         message: classified.message,
@@ -403,7 +427,7 @@ export function registerEventListeners(
         const reasonText =
           req.reason ?? req.displayReason?.["zh"] ?? req.displayReason?.en;
 
-        const { pendingId, promise: hermesPromise, expiresAt } = store.addApproval({
+        const { pendingId, seqNo, shortId, promise: hermesPromise, expiresAt } = store.addApproval({
           sessionId: meta.sessionId,
           taskTitle: meta.taskTitle,
           cwd: meta.cwd,
@@ -419,8 +443,10 @@ export function registerEventListeners(
           },
         });
 
-        const summary = `需要人工审批 ${req.toolName} 调用：${argumentsPreview}${reasonText ? `（原因：${reasonText}）` : ""}`;
+        const summary = `[${shortId}] 需要人工审批 ${req.toolName} 调用：${argumentsPreview}${reasonText ? `（原因：${reasonText}）` : ""}`;
         void webhook.send({
+          seqNo,
+          shortId,
           sessionId: meta.sessionId,
           taskTitle: meta.taskTitle,
           cwd: meta.cwd,
@@ -429,6 +455,7 @@ export function registerEventListeners(
           pendingId,
           summary: truncateText(summary, MAX_SUMMARY_CHARS),
           details: {
+            shortId,
             toolName: req.toolName,
             argumentsPreview,
             ...(req.callId !== undefined ? { callId: req.callId } : {}),
@@ -507,7 +534,7 @@ export function registerEventListeners(
           agent?.id ?? "unknown-session",
         );
 
-        const { pendingId, promise: hermesPromise, expiresAt } = store.addQuestion({
+        const { pendingId, seqNo, shortId, promise: hermesPromise, expiresAt } = store.addQuestion({
           sessionId: meta.sessionId,
           taskTitle: meta.taskTitle,
           cwd: meta.cwd,
@@ -524,14 +551,17 @@ export function registerEventListeners(
         hermesPromise.catch(() => {});
 
         void webhook.send({
+          seqNo,
+          shortId,
           sessionId: meta.sessionId,
           taskTitle: meta.taskTitle,
           cwd: meta.cwd,
           state: "paused_question",
           stateLabel: "等待回答提问",
           pendingId,
-          summary: formatQuestionsSummary(request.questions),
+          summary: `[${shortId}] ${formatQuestionsSummary(request.questions)}`,
           details: {
+            shortId,
             questions: request.questions,
             ...(request.wait?.callId !== undefined ? { callId: request.wait.callId } : {}),
             timed: request.wait?.timed ?? false,
@@ -752,14 +782,19 @@ export function registerEventListeners(
                   ? "任务已中止"
                   : "任务已停止";
 
+            const { seqNo, shortId } = store.nextShortId();
+
             void webhook.send({
+              seqNo,
+              shortId,
               sessionId: meta.sessionId,
               taskTitle: meta.taskTitle,
               cwd: meta.cwd,
               state: "stopped",
               stateLabel,
-              summary,
+              summary: truncateText(`[${shortId}] ${lastText || fallbackSummary}`, MAX_SUMMARY_CHARS),
               details: {
+                shortId,
                 turn: data["turn"],
                 reasonKind,
                 ...(reason.reason ? { cancelCause: reason.reason } : {}),

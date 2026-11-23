@@ -4,7 +4,7 @@ import { PendingStore } from "./pending-store.js";
 import { WebhookClient } from "./webhook-client.js";
 import { BridgeMcpServer } from "./mcp-server.js";
 export declare const name = "dsh-hermes-bridge";
-export declare const inject: readonly ["agents", "sessions"];
+export declare const inject: readonly ["agents", "sessions", "userQuestions", "sessionTitle"];
 export declare const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, "mcpAuthToken" | "hermesWebhookSecret">;
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     mcpHost: z<string, string, "defined">;
@@ -38,7 +38,7 @@ export interface BridgeRuntime {
 export declare function apply(ctx: DshContext, rawConfig?: Partial<BridgeConfig>): BridgeRuntime;
 export { PendingStore, buildAskUserQuestionAnswer } from "./pending-store.js";
 export { WebhookClient, generateEventId, signWebhookPayload } from "./webhook-client.js";
-export { registerEventListeners, classifyLlmFailure, extractArgumentsPreview, resolveSessionMeta, } from "./event-listeners.js";
+export { registerEventListeners, classifyLlmFailure, extractArgumentsPreview, resolveSessionMeta, getOptionalService, } from "./event-listeners.js";
 export { BridgeMcpServer } from "./mcp-server.js";
 export type * from "./types.js";
 //# sourceMappingURL=index.d.ts.map

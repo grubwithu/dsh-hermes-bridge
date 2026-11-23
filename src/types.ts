@@ -145,18 +145,23 @@ export interface DshSessionEvent {
   readonly data: Record<string, unknown>;
 }
 
+export interface DshAgentsService {
+  get(id: string): DshAgent | undefined;
+  list(): DshAgent[];
+}
+
+export interface DshSessionsService {
+  get(id: string): DshSession | undefined;
+  list(): DshSession[];
+}
+
 export interface DshContext {
   on(name: string, listener: (...args: any[]) => any, options?: boolean | { prepend?: boolean; global?: boolean }): () => boolean;
   effect?(callback: () => (() => void | Promise<void>) | void, label?: string): () => void;
+  get?<T = unknown>(name: string): T | undefined;
   logger?(name?: string): BridgeLogger;
-  agents?: {
-    get(id: string): DshAgent | undefined;
-    list(): DshAgent[];
-  };
-  sessions?: {
-    get(id: string): DshSession | undefined;
-    list(): DshSession[];
-  };
+  agents?: DshAgentsService;
+  sessions?: DshSessionsService;
   sessionTitle?: DshSessionTitleService;
   userQuestions?: DshUserQuestionsService;
 }
@@ -164,6 +169,8 @@ export interface DshContext {
 export interface BridgeWebhookPayload {
   eventId: string;
   event_type: BridgeEventState;
+  seqNo?: number;
+  shortId?: string;
   timestamp: string;
   sessionId: string;
   taskTitle: string;
@@ -177,6 +184,8 @@ export interface BridgeWebhookPayload {
 
 export interface PendingApprovalView {
   pendingId: string;
+  seqNo: number;
+  shortId: string;
   sessionId: string;
   taskTitle: string;
   cwd: string;
@@ -190,6 +199,8 @@ export interface PendingApprovalView {
 
 export interface PendingQuestionView {
   pendingId: string;
+  seqNo: number;
+  shortId: string;
   sessionId: string;
   taskTitle: string;
   cwd: string;

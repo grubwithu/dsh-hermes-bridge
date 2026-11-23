@@ -6,7 +6,7 @@ import { registerEventListeners } from "./event-listeners.js";
 import { BridgeMcpServer } from "./mcp-server.js";
 
 export const name = "dsh-hermes-bridge";
-export const inject = ["agents", "sessions"] as const;
+export const inject = ["agents", "sessions", "userQuestions", "sessionTitle"] as const;
 
 export const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, "mcpAuthToken" | "hermesWebhookSecret"> = {
   mcpHost: "127.0.0.1",
@@ -175,6 +175,7 @@ export {
   classifyLlmFailure,
   extractArgumentsPreview,
   resolveSessionMeta,
+  getOptionalService,
 } from "./event-listeners.js";
 export { BridgeMcpServer } from "./mcp-server.js";
 export type * from "./types.js";

@@ -1,15 +1,26 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { apply, PendingStore, BridgeMcpServer } from "../lib/index.js";
-import type { DshAgent, DshContext, DshSession, DshUserMessage } from "../lib/types.js";
+import { apply, inject, PendingStore, BridgeMcpServer } from "../lib/index.js";
+import type {
+  AskUserQuestionAnswer,
+  DshAgent,
+  DshContext,
+  DshSession,
+  DshUserMessage,
+} from "../lib/types.js";
 
-function createTestContext() {
+function createTestContext(options?: {
+  injectedKeys?: ReadonlyArray<string>;
+}) {
   const agents = new Map<string, DshAgent>();
   const sessions = new Map<string, DshSession>();
   const handlers = new Map<string, Array<(...args: any[]) => any>>();
   const effects: Array<() => unknown> = [];
+  const answeredContinued: Array<{ sessionId: string; callId: string; answer: AskUserQuestionAnswer }> = [];
 
-  const ctx: DshContext = {
+  const allowedServices = new Set<string>(options?.injectedKeys ?? inject);
+
+  const rawCtx: DshContext = {
     on(name, listener) {
       const list = handlers.get(name) ?? [];
       list.push(listener);
@@ -40,9 +51,26 @@ function createTestContext() {
     sessionTitle: {
       get: (session) => ({ title: `Title(${session.id})` }),
     },
+    userQuestions: {
+      answer(agent, callId, answer) {
+        answeredContinued.push({ sessionId: agent.id, callId, answer });
+        return true;
+      },
+    },
   };
 
-  return { ctx, agents, sessions, effects };
+  // Simulate Cordis's strict Context Proxy that throws when accessing an uninjected service
+  const SERVICE_KEYS = new Set(["agents", "sessions", "userQuestions", "sessionTitle"]);
+  const ctx = new Proxy(rawCtx, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && SERVICE_KEYS.has(prop) && !allowedServices.has(prop)) {
+        throw new Error(`cannot get property "${prop}" without inject`);
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+
+  return { ctx, agents, sessions, effects, answeredContinued };
 }
 
 async function rpcPost(
@@ -288,7 +316,7 @@ describe("BridgeMcpServer", () => {
       assert.equal(blockedPayload.code, "PENDING_QUESTION_EXISTS");
       assert.equal(followupIdle.length, 0);
 
-      // Answer the pending question properly, then send instruction to idle agent -> uses followup
+      // Answer the pending question properly (using short number "#2"), then send instruction to idle agent -> uses followup
       const answerResp = await rpcPost(
         baseUrl,
         {
@@ -297,7 +325,7 @@ describe("BridgeMcpServer", () => {
           method: "tools/call",
           params: {
             name: "dsh_answer_question",
-            arguments: { pendingId: qst2.pendingId, answerText: "staging" },
+            arguments: { pendingId: "#2", answerText: "staging" },
           },
         },
         "secret-mcp-token",
@@ -383,6 +411,7 @@ describe("BridgeMcpServer", () => {
   });
 
   it("wires apply(ctx, config) and cleans up cleanly on dispose", async () => {
+    assert.deepEqual(inject, ["agents", "sessions", "userQuestions", "sessionTitle"]);
     const { ctx } = createTestContext();
     const runtime = apply(ctx, { mcpPort: 0 });
     await new Promise((r) => setTimeout(r, 30));
@@ -394,5 +423,59 @@ describe("BridgeMcpServer", () => {
 
     await runtime.dispose();
     assert.equal(runtime.mcpServer.getAddress(), null);
+  });
+
+  it("answers open-mode questions even on a strict Cordis Proxy ctx where userQuestions is not injected", async () => {
+    const { ctx } = createTestContext({ injectedKeys: ["agents", "sessions"] });
+    const store = new PendingStore();
+    const server = new BridgeMcpServer({
+      host: "127.0.0.1",
+      port: 0,
+      authToken: "token-strict",
+      ctx,
+      store,
+    });
+    const addr = await server.start();
+    const baseUrl = `http://${addr.host}:${addr.port}`;
+
+    try {
+      const q = store.addQuestion({
+        sessionId: "sess_strict",
+        taskTitle: "Strict Proxy Task",
+        cwd: "/tmp/strict",
+        questions: [
+          {
+            id: "framework",
+            question: "Which test runner?",
+            options: [{ label: "Vitest" }, { label: "Node Test" }],
+          },
+        ],
+        timeoutMs: 5_000,
+      });
+
+      const resp = await rpcPost(
+        baseUrl,
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "dsh_answer_question",
+            arguments: { pendingId: "1", answerText: "Node Test" },
+          },
+        },
+        "token-strict",
+      );
+      assert.equal(resp.status, 200);
+      const result = parseToolResult(resp.json);
+      assert.equal(result.ok, true);
+      assert.equal(result.pendingId, q.pendingId);
+      assert.deepEqual(await q.promise, {
+        answers: [{ id: "framework", selected: ["Node Test"] }],
+      });
+    } finally {
+      store.dispose();
+      await server.stop();
+    }
   });
 });

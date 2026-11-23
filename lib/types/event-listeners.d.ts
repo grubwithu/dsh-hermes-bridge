@@ -1,6 +1,7 @@
 import type { BridgeConfig, BridgeLogger, DshContext, DshSession } from "./types.js";
 import type { PendingStore } from "./pending-store.js";
 import type { WebhookClient } from "./webhook-client.js";
+export declare function getOptionalService<T>(ctx: DshContext, key: "userQuestions" | "sessionTitle" | "agents" | "sessions"): T | undefined;
 export interface SessionCaches {
     titles: Map<string, string>;
     firstPrompts: Map<string, string>;

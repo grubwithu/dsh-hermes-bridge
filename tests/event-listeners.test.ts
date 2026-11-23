@@ -269,6 +269,9 @@ describe("Event Listeners - AC-1 through AC-5", () => {
       assert.equal(captured.length, 1);
       const evt1 = captured[0]!;
       assert.equal(evt1.payload.state, "paused_approval");
+      assert.equal(evt1.payload.seqNo, 1);
+      assert.equal(evt1.payload.shortId, "#1");
+      assert.equal(evt1.payload.summary.startsWith("[#1] "), true);
       assert.equal(evt1.payload.taskTitle, "SyncFuzz 回归实验");
       assert.equal(
         evt1.payload.details["argumentsPreview"],
@@ -377,10 +380,12 @@ describe("Event Listeners - AC-1 through AC-5", () => {
       await new Promise((r) => setTimeout(r, 15));
       assert.equal(captured.length, 1);
       assert.equal(captured[0]!.payload.state, "paused_question");
+      assert.equal(captured[0]!.payload.shortId, "#1");
+      assert.equal(captured[0]!.payload.summary.startsWith("[#1] "), true);
       const qPendingId = captured[0]!.payload.pendingId!;
       assert.ok(qPendingId.startsWith("qst_"));
 
-      const ansRes = store.answerQuestion(qPendingId, { answerText: "Unit" });
+      const ansRes = store.answerQuestion("#1", { answerText: "Unit" });
       assert.equal(ansRes.ok, true);
       assert.deepEqual(await answerPromise, {
         answers: [{ id: "q1", selected: ["Unit"] }],

@@ -22,6 +22,8 @@ export interface AddQuestionInput {
 export type DecideApprovalResult = {
     ok: true;
     pendingId: string;
+    seqNo: number;
+    shortId: string;
     sessionId: string;
     decision: ApprovalDecision;
     dshOutcome: "allowed-once" | "rejected";
@@ -33,6 +35,8 @@ export type DecideApprovalResult = {
 export type AnswerQuestionResult = {
     ok: true;
     pendingId: string;
+    seqNo: number;
+    shortId: string;
     sessionId: string;
     mode: "open" | "continued";
     answer: AskUserQuestionAnswer;
@@ -50,9 +54,18 @@ export declare class PendingStore {
     private readonly questions;
     private readonly sessionAutoApproved;
     private readonly recentStopped;
+    private seqCounter;
     private disposed;
+    nextShortId(): {
+        seqNo: number;
+        shortId: string;
+    };
+    private findApprovalEntry;
+    private findQuestionEntry;
     addApproval(input: AddApprovalInput): {
         pendingId: string;
+        seqNo: number;
+        shortId: string;
         promise: Promise<DshApprovalOutcome>;
         expiresAt: string;
         view: PendingApprovalView;
@@ -63,6 +76,8 @@ export declare class PendingStore {
     clearSession(sessionId: string): void;
     addQuestion(input: AddQuestionInput): {
         pendingId: string;
+        seqNo: number;
+        shortId: string;
         promise: Promise<AskUserQuestionAnswer>;
         expiresAt: string;
         view: PendingQuestionView;
@@ -71,7 +86,7 @@ export declare class PendingStore {
     answerQuestion(pendingId: string, input: {
         answerText: string;
         selectedOptions?: string[];
-    }, userQuestionsService?: DshUserQuestionsService): AnswerQuestionResult;
+    }, userQuestionsProvider?: DshUserQuestionsService | (() => DshUserQuestionsService | undefined)): AnswerQuestionResult;
     settleQuestionExternally(pendingId: string, reason?: Error): boolean;
     hasPendingQuestionForSession(sessionId: string): boolean;
     getPendingQuestionIdsForSession(sessionId: string): string[];

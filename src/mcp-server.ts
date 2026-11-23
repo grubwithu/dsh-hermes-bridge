@@ -6,10 +6,15 @@ import type {
   ActiveSessionView,
   ApprovalDecision,
   BridgeLogger,
+  DshAgentsService,
   DshContext,
+  DshSessionTitleService,
+  DshSessionsService,
   DshUserMessage,
+  DshUserQuestionsService,
 } from "./types.js";
 import type { PendingStore } from "./pending-store.js";
+import { getOptionalService } from "./event-listeners.js";
 
 const MAX_BODY_BYTES = 1_048_576;
 const SUPPORTED_PROTOCOL_VERSIONS = new Set([
@@ -71,13 +76,14 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: "dsh_decide_approval",
     description:
-      "Approve or reject a pending DSH tool call approval request by pendingId.",
+      "Approve or reject a pending DSH tool call approval request by pendingId or short message number (e.g. '#1', '1', or 'apr_a3f2').",
     inputSchema: {
       type: "object",
       properties: {
         pendingId: {
           type: "string",
-          description: "The pending approval identifier (e.g. apr_a3f2).",
+          description:
+            "The pending approval identifier or short message number (e.g. '#1', '1', or 'apr_a3f2').",
         },
         decision: {
           type: "string",
@@ -100,13 +106,14 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: "dsh_answer_question",
     description:
-      "Answer a pending ask_user_question prompt in DSH by pendingId without aborting the turn.",
+      "Answer a pending ask_user_question prompt in DSH by pendingId or short message number (e.g. '#2', '2', or 'qst_1b4c') without aborting the turn.",
     inputSchema: {
       type: "object",
       properties: {
         pendingId: {
           type: "string",
-          description: "The pending question identifier (e.g. qst_1b4c).",
+          description:
+            "The pending question identifier or short message number (e.g. '#2', '2', or 'qst_1b4c').",
         },
         answerText: {
           type: "string",
@@ -634,7 +641,7 @@ export class BridgeMcpServer {
             answerText,
             selectedOptions: selectedOptionsRaw as string[] | undefined,
           },
-          this.ctx.userQuestions,
+          () => getOptionalService<DshUserQuestionsService>(this.ctx, "userQuestions"),
         );
         return { payload: result };
       }
@@ -664,7 +671,8 @@ export class BridgeMcpServer {
           };
         }
 
-        const agent = this.ctx.agents?.get(sessionId);
+        const agentsSvc = getOptionalService<DshAgentsService>(this.ctx, "agents");
+        const agent = agentsSvc?.get(sessionId);
         if (!agent) {
           return {
             payload: {
@@ -735,7 +743,8 @@ export class BridgeMcpServer {
           return { jsonRpcInvalidParams: "Invalid params: sessionId must be a non-empty string" };
         }
 
-        const agent = this.ctx.agents?.get(sessionId);
+        const agentsSvc = getOptionalService<DshAgentsService>(this.ctx, "agents");
+        const agent = agentsSvc?.get(sessionId);
         if (!agent) {
           return {
             payload: {
@@ -766,19 +775,17 @@ export class BridgeMcpServer {
   private collectActiveSessions(): ActiveSessionView[] {
     const approvals = this.store.listApprovals();
     const questions = this.store.listQuestions();
+    const agentsSvc = getOptionalService<DshAgentsService>(this.ctx, "agents");
+    const sessionsSvc = getOptionalService<DshSessionsService>(this.ctx, "sessions");
+    const sessionTitleSvc = getOptionalService<DshSessionTitleService>(this.ctx, "sessionTitle");
 
-    const agents = this.ctx.agents?.list() ?? [];
+    const agents = agentsSvc?.list() ?? [];
     if (agents.length > 0) {
       return agents.map((agent) => {
         const session = agent.session;
         const sessionId = session?.id ?? agent.id;
         const cwd = session?.header?.cwd ?? "";
-        let title: string | undefined;
-        try {
-          title = session ? this.ctx.sessionTitle?.get(session)?.title : undefined;
-        } catch {
-          title = undefined;
-        }
+        const title = session ? sessionTitleSvc?.get(session)?.title : undefined;
         return {
           sessionId,
           taskTitle: title?.trim() || (cwd ? basename(cwd) : "") || sessionId,
@@ -791,16 +798,11 @@ export class BridgeMcpServer {
       });
     }
 
-    const sessions = this.ctx.sessions?.list() ?? [];
+    const sessions = sessionsSvc?.list() ?? [];
     return sessions.map((session) => {
       const sessionId = session.id;
       const cwd = session.header?.cwd ?? "";
-      let title: string | undefined;
-      try {
-        title = this.ctx.sessionTitle?.get(session)?.title;
-      } catch {
-        title = undefined;
-      }
+      const title = sessionTitleSvc?.get(session)?.title;
       return {
         sessionId,
         taskTitle: title?.trim() || (cwd ? basename(cwd) : "") || sessionId,

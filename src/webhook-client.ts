@@ -2,6 +2,8 @@ import { createHmac, randomBytes } from "node:crypto";
 import type { BridgeEventState, BridgeLogger, BridgeWebhookPayload } from "./types.js";
 
 export interface WebhookEventInput {
+  seqNo?: number;
+  shortId?: string;
   sessionId: string;
   taskTitle: string;
   cwd: string;
@@ -90,6 +92,8 @@ export class WebhookClient {
     return {
       eventId,
       event_type: input.state,
+      ...(input.seqNo !== undefined ? { seqNo: input.seqNo } : {}),
+      ...(input.shortId !== undefined ? { shortId: input.shortId } : {}),
       timestamp: now.toISOString(),
       sessionId: input.sessionId,
       taskTitle: input.taskTitle,
