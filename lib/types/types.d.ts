@@ -113,6 +113,12 @@ export interface AskUserQuestionAnswerItem {
 export interface AskUserQuestionAnswer {
     answers: AskUserQuestionAnswerItem[];
 }
+export interface PerQuestionAnswerInput {
+    questionId?: string;
+    questionIndex?: number;
+    answerText?: string;
+    selectedOptions?: string[];
+}
 export interface DshUserQuestionRequestEvent {
     questions: AskUserQuestionItem[];
     agent?: DshAgent;
@@ -198,6 +204,7 @@ export interface PendingQuestionView {
     questions: AskUserQuestionItem[];
     questionText: string;
     options: Array<{
+        code?: string;
         label: string;
         description?: string;
     }>;

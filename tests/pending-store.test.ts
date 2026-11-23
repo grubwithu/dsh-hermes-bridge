@@ -182,6 +182,93 @@ describe("PendingStore - questions & stopped history", () => {
     assert.deepEqual(builtIntent, {
       answers: [{ id: "confirm", selected: ["Allow"] }],
     });
+
+    // Option letters (A, B, C) & stripped "(推荐)" / "（推荐）" suffix matching
+    const recommendedQuestions: AskUserQuestionItem[] = [
+      {
+        id: "verify_q1",
+        question: "第一题（单选）：请选择一个选项。",
+        options: [
+          { label: "功能正常（推荐）" },
+          { label: "存在异常" },
+        ],
+      },
+    ];
+    // 1. Passing "功能正常" without "（推荐）" must match "功能正常（推荐）" instead of falling back to custom
+    assert.deepEqual(
+      buildAskUserQuestionAnswer(recommendedQuestions, "功能正常", ["功能正常"]),
+      {
+        answers: [{ id: "verify_q1", selected: ["功能正常（推荐）"] }],
+      },
+    );
+    // 2. Passing option letter "A" or "选B"
+    assert.deepEqual(
+      buildAskUserQuestionAnswer(recommendedQuestions, "A"),
+      {
+        answers: [{ id: "verify_q1", selected: ["功能正常（推荐）"] }],
+      },
+    );
+    assert.deepEqual(
+      buildAskUserQuestionAnswer(recommendedQuestions, "选B"),
+      {
+        answers: [{ id: "verify_q1", selected: ["存在异常"] }],
+      },
+    );
+
+    // 3. Multi-question prompt with single-select + multi-select
+    const twoQuestions: AskUserQuestionItem[] = [
+      {
+        id: "q_single",
+        question: "第一题（单选）：请选择一个选项。",
+        options: [
+          { label: "功能正常（推荐）" },
+          { label: "存在异常" },
+        ],
+      },
+      {
+        id: "q_multi",
+        question: "第二题（多选）：请勾选任意一项或多项。",
+        multiSelect: true,
+        options: [
+          { label: "日志清晰" },
+          { label: "耗时合理" },
+          { label: "需要优化" },
+        ],
+      },
+    ];
+
+    assert.deepEqual(
+      buildAskUserQuestionAnswer(twoQuestions, "1选A，2选AC"),
+      {
+        answers: [
+          { id: "q_single", selected: ["功能正常（推荐）"] },
+          { id: "q_multi", selected: ["日志清晰", "需要优化"] },
+        ],
+      },
+    );
+
+    assert.deepEqual(
+      buildAskUserQuestionAnswer(twoQuestions, "", ["A", "A, B"]),
+      {
+        answers: [
+          { id: "q_single", selected: ["功能正常（推荐）"] },
+          { id: "q_multi", selected: ["日志清晰", "耗时合理"] },
+        ],
+      },
+    );
+
+    assert.deepEqual(
+      buildAskUserQuestionAnswer(twoQuestions, "", undefined, [
+        { questionIndex: 1, selectedOptions: ["功能正常"] },
+        { questionIndex: 2, selectedOptions: ["B", "C"] },
+      ]),
+      {
+        answers: [
+          { id: "q_single", selected: ["功能正常（推荐）"] },
+          { id: "q_multi", selected: ["耗时合理", "需要优化"] },
+        ],
+      },
+    );
   });
 
   it("resolves open and continued questions via PendingStore", async () => {

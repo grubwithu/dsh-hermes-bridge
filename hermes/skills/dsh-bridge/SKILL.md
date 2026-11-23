@@ -19,7 +19,9 @@ metadata:
 * 向用户汇报 DSH 状态、转述审批/提问、确认执行结果或反问澄清时，**只使用简洁、自然的中文句子**。
 * 每条来自 DSH 的通知或待处理请求都带有一个简短易打的**短编号**（如 `[#1]`、`[#2]`，体现在 Webhook 载荷的 `shortId` 及 `summary` 前缀中）：
   * 向用户转述新的审批、提问或状态通知时，在句首自然带上这个短编号（例如：“`[#1]` SyncFuzz 想要运行 `rm -rf build/cache && pytest`，要放行吗？”）。
-  * 用户在无歧义时可以直接说“同意 / 选第一个”，也可以随时通过短编号快速指定目标（例如“1 同意”“#2 用 PostgreSQL”“拒绝 1”）。
+  * 用户在无歧义时可以直接说“同意 / 选A”，也可以随时通过短编号快速指定目标（例如“1 同意”“#2 选A”“拒绝 1”）。
+* **选择题必须展示选项字母（A / B / C）**：
+  * 当 DSH 提出带有可选项的问题（无论是单个问题还是包含多个问题的一次提问）时，向用户转述时**必须把每个问题的所有可选项及其字母编号（`A. xxx / B. yyy / C. zzz`）完整写出来**，并标明单选或多选（例如：“`[#5]` DSH 提出了 2 个问题：1. 第一题（单选：A. 功能正常（推荐） / B. 存在问题）；2. 第二题（多选：A. 日志清晰 / B. 耗时合理 / C. 需要优化）。请告诉我要选哪些，比如‘1选A，2选AB’。”）。
 * **严禁**输出交互卡片、Markdown 表格、大段 JSON 原始载荷。
 * **严禁**要求用户输入 `/approve`、`/answer` 等斜杠命令，或让用户手抄 `apr_xxxx`、`qst_xxxx`、`sessionId`、`eventId` 等长内部标识（`dsh_decide_approval` 和 `dsh_answer_question` 的 `pendingId` 参数原生支持直接传入 `"#1"`、`"1"` 或完整 `apr_xxxx` / `qst_xxxx`）。
 
@@ -41,9 +43,12 @@ metadata:
    * 第一步：先调用 `dsh_decide_approval({ pendingId, decision: "rejected", reason: "用户通过 Telegram 拒绝并改派方案" })`。
    * 第二步：再调用 `dsh_send_instruction({ sessionId, message: "<用户的新要求>" })` 把修改意见发给同一会话继续执行。
 
-4. **回答 DSH 的提问（`ask_user_question`）**（用户直接回复了问题答案，如“选 PostgreSQL / 2 用 SQLite”）：
-   * 调用 `dsh_answer_question({ pendingId, answerText, selectedOptions? })`（`pendingId` 同样可直接传 `"#2"`、`"2"` 或 `"qst_xxxx"`）。
-   * 如果原提问带有选项且用户的回复明确对应其中某项，可同时填入 `selectedOptions`；若是开放式回答，直接整理口语文本传入 `answerText`。
+4. **回答 DSH 的提问（`ask_user_question`）**（用户直接回复了选项字母或问题答案，如“选 A / 1选A，2选BC / 用 SQLite”）：
+   * 调用 `dsh_answer_question({ pendingId, answerText?, selectedOptions?, answers? })`（`pendingId` 同样可直接传 `"#2"`、`"2"` 或 `"qst_xxxx"`）。
+   * `dsh_answer_question` 原生支持：
+     * 直接传选项字母（如 `selectedOptions: ["A"]`、多选 `selectedOptions: ["A", "C"]` 或 `answerText: "A"`）；
+     * 传完整或去掉括号后缀的选项标签（如 `"功能正常"` 会自动匹配 `"功能正常（推荐）"`）；
+     * 多问题一次提问时，可传 `answers: [{ questionIndex: 1, selectedOptions: ["A"] }, { questionIndex: 2, selectedOptions: ["A", "B"] }]`，或 `selectedOptions: ["A", "A, B"]`，或 `answerText: "1选A，2选AB"`。
    * **重要安全约束**：只要某个会话存在挂起的提问，**严禁**对其直接调用 `dsh_send_instruction`（否则会触发 DSH 底层 `ASK_ABORTED` 导致提问异常中断）。如果 `dsh_send_instruction` 返回 `PENDING_QUESTION_EXISTS`，必须先通过 `dsh_answer_question` 完成作答。
 
 5. **补充新指令或中止任务**：

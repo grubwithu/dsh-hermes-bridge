@@ -11,7 +11,10 @@ import type {
   AskUserQuestionAnswer,
   AskUserQuestionItem,
 } from "./types.js";
-import type { PendingStore } from "./pending-store.js";
+import {
+  formatQuestionOptionsInline,
+  type PendingStore,
+} from "./pending-store.js";
 import type { WebhookClient } from "./webhook-client.js";
 
 export function getOptionalService<T>(
@@ -266,18 +269,28 @@ function extractFailureFromAttemptStream(stream: unknown): unknown {
   return null;
 }
 
-function formatQuestionsSummary(questions: AskUserQuestionItem[]): string {
+export function formatQuestionsSummary(questions: AskUserQuestionItem[]): string {
   if (questions.length === 0) {
     return "DSH Agent 向你提出了一个问题。";
   }
   if (questions.length === 1) {
     const q = questions[0]!;
-    const optLabels = (q.options ?? []).map((o) => o.label);
-    const optSuffix = optLabels.length > 0 ? `（可选项：${optLabels.join(" / ")}）` : "";
-    return truncateText(`${q.question}${optSuffix}`, 360);
+    const opts = q.options ?? [];
+    const modeLabel = q.multiSelect ? "多选可选项" : "可选项";
+    const optSuffix =
+      opts.length > 0 ? `（${modeLabel}：${formatQuestionOptionsInline(opts)}）` : "";
+    return truncateText(`${q.question}${optSuffix}`, 600);
   }
-  const joined = questions.map((q, idx) => `${idx + 1}. ${q.question}`).join("；");
-  return truncateText(`DSH Agent 提出了 ${questions.length} 个问题：${joined}`, 360);
+  const joined = questions
+    .map((q, idx) => {
+      const opts = q.options ?? [];
+      const modeLabel = q.multiSelect ? "多选可选项" : "可选项";
+      const optSuffix =
+        opts.length > 0 ? `（${modeLabel}：${formatQuestionOptionsInline(opts)}）` : "";
+      return `${idx + 1}. ${q.question}${optSuffix}`;
+    })
+    .join("；");
+  return truncateText(`DSH Agent 提出了 ${questions.length} 个问题：${joined}`, 800);
 }
 
 function makeAbortError(signal: AbortSignal, fallbackMessage: string): Error {

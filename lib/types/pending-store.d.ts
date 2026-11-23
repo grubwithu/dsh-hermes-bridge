@@ -1,4 +1,4 @@
-import type { ApprovalDecision, AskUserQuestionAnswer, AskUserQuestionItem, DshAgent, DshApprovalOutcome, DshUserQuestionsService, PendingApprovalView, PendingQuestionView, RecentStoppedView } from "./types.js";
+import type { ApprovalDecision, AskUserQuestionAnswer, AskUserQuestionItem, AskUserQuestionOption, DshAgent, DshApprovalOutcome, DshUserQuestionsService, PendingApprovalView, PendingQuestionView, PerQuestionAnswerInput, RecentStoppedView } from "./types.js";
 export interface AddApprovalInput {
     sessionId: string;
     taskTitle: string;
@@ -48,7 +48,9 @@ export type AnswerQuestionResult = {
 export declare function createQuestionTimeoutError(pendingId: string): Error & {
     code: string;
 };
-export declare function buildAskUserQuestionAnswer(questions: AskUserQuestionItem[], answerText: string, selectedOptions?: string[]): AskUserQuestionAnswer;
+export declare function optionIndexToLetter(index: number): string;
+export declare function formatQuestionOptionsInline(options: AskUserQuestionOption[]): string;
+export declare function buildAskUserQuestionAnswer(questions: AskUserQuestionItem[], answerText?: string, selectedOptions?: string[], perQuestionAnswers?: PerQuestionAnswerInput[]): AskUserQuestionAnswer;
 export declare class PendingStore {
     private readonly approvals;
     private readonly questions;
@@ -84,8 +86,9 @@ export declare class PendingStore {
     };
     markQuestionContinued(pendingId: string, agent: DshAgent, callId: string): boolean;
     answerQuestion(pendingId: string, input: {
-        answerText: string;
+        answerText?: string;
         selectedOptions?: string[];
+        answers?: PerQuestionAnswerInput[];
     }, userQuestionsProvider?: DshUserQuestionsService | (() => DshUserQuestionsService | undefined)): AnswerQuestionResult;
     settleQuestionExternally(pendingId: string, reason?: Error): boolean;
     hasPendingQuestionForSession(sessionId: string): boolean;

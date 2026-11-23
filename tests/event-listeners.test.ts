@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { PendingStore } from "../lib/pending-store.js";
 import { WebhookClient } from "../lib/webhook-client.js";
-import { registerEventListeners } from "../lib/event-listeners.js";
+import { formatQuestionsSummary, registerEventListeners } from "../lib/event-listeners.js";
 import type {
   AskUserQuestionAnswer,
   BridgeConfig,
@@ -382,10 +382,37 @@ describe("Event Listeners - AC-1 through AC-5", () => {
       assert.equal(captured[0]!.payload.state, "paused_question");
       assert.equal(captured[0]!.payload.shortId, "#1");
       assert.equal(captured[0]!.payload.summary.startsWith("[#1] "), true);
+      assert.equal(
+        captured[0]!.payload.summary.includes("A. Unit / B. Integration"),
+        true,
+      );
       const qPendingId = captured[0]!.payload.pendingId!;
       assert.ok(qPendingId.startsWith("qst_"));
 
-      const ansRes = store.answerQuestion("#1", { answerText: "Unit" });
+      // Multi-question summary includes lettered options for every question
+      const multiSummary = formatQuestionsSummary([
+        {
+          id: "q1",
+          question: "第一题（单选）：请选择一个选项。",
+          options: [{ label: "功能正常（推荐）" }, { label: "存在问题" }],
+        },
+        {
+          id: "q2",
+          question: "第二题（多选）：请勾选任意一项或多项。",
+          multiSelect: true,
+          options: [{ label: "选项甲" }, { label: "选项乙" }],
+        },
+      ]);
+      assert.equal(
+        multiSummary.includes("1. 第一题（单选）：请选择一个选项。（可选项：A. 功能正常（推荐） / B. 存在问题）"),
+        true,
+      );
+      assert.equal(
+        multiSummary.includes("2. 第二题（多选）：请勾选任意一项或多项。（多选可选项：A. 选项甲 / B. 选项乙）"),
+        true,
+      );
+
+      const ansRes = store.answerQuestion("#1", { answerText: "A" });
       assert.equal(ansRes.ok, true);
       assert.deepEqual(await answerPromise, {
         answers: [{ id: "q1", selected: ["Unit"] }],

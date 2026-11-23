@@ -1,5 +1,5 @@
-import type { BridgeConfig, BridgeLogger, DshContext, DshSession } from "./types.js";
-import type { PendingStore } from "./pending-store.js";
+import type { BridgeConfig, BridgeLogger, DshContext, DshSession, AskUserQuestionItem } from "./types.js";
+import { type PendingStore } from "./pending-store.js";
 import type { WebhookClient } from "./webhook-client.js";
 export declare function getOptionalService<T>(ctx: DshContext, key: "userQuestions" | "sessionTitle" | "agents" | "sessions"): T | undefined;
 export interface SessionCaches {
@@ -29,5 +29,6 @@ export interface ClassifiedFailure {
     summary: string;
 }
 export declare function classifyLlmFailure(rawFailure: unknown): ClassifiedFailure | null;
+export declare function formatQuestionsSummary(questions: AskUserQuestionItem[]): string;
 export declare function registerEventListeners(ctx: DshContext, config: BridgeConfig, store: PendingStore, webhook: WebhookClient, logger: BridgeLogger, nowFn?: () => number): () => void;
 //# sourceMappingURL=event-listeners.d.ts.map

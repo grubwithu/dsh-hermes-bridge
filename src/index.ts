@@ -168,7 +168,12 @@ export function apply(ctx: DshContext, rawConfig?: Partial<BridgeConfig>): Bridg
   };
 }
 
-export { PendingStore, buildAskUserQuestionAnswer } from "./pending-store.js";
+export {
+  PendingStore,
+  buildAskUserQuestionAnswer,
+  optionIndexToLetter,
+  formatQuestionOptionsInline,
+} from "./pending-store.js";
 export { WebhookClient, generateEventId, signWebhookPayload } from "./webhook-client.js";
 export {
   registerEventListeners,
@@ -176,6 +181,7 @@ export {
   extractArgumentsPreview,
   resolveSessionMeta,
   getOptionalService,
+  formatQuestionsSummary,
 } from "./event-listeners.js";
 export { BridgeMcpServer } from "./mcp-server.js";
 export type * from "./types.js";

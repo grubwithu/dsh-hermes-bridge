@@ -12,6 +12,7 @@ import type {
   DshSessionsService,
   DshUserMessage,
   DshUserQuestionsService,
+  PerQuestionAnswerInput,
 } from "./types.js";
 import type { PendingStore } from "./pending-store.js";
 import { getOptionalService } from "./event-listeners.js";
@@ -106,7 +107,7 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: "dsh_answer_question",
     description:
-      "Answer a pending ask_user_question prompt in DSH by pendingId or short message number (e.g. '#2', '2', or 'qst_1b4c') without aborting the turn.",
+      "Answer a pending ask_user_question prompt in DSH by pendingId or short message number (e.g. '#2', '2', or 'qst_1b4c') without aborting the turn. Supports option letters ('A', 'B', 'AC'), partial/full option labels, multi-question numbered replies ('1: A; 2: B, C'), or per-question structured answers.",
     inputSchema: {
       type: "object",
       properties: {
@@ -117,15 +118,45 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
         },
         answerText: {
           type: "string",
-          description: "The user's natural language answer text.",
+          description:
+            "The user's answer text, option letter(s) (e.g. 'A', 'B, C', '1选A，2选BC'), or custom free-text reply.",
         },
         selectedOptions: {
           type: "array",
           items: { type: "string" },
-          description: "Optional option labels matching the question's offered choices.",
+          description:
+            "Optional selected option letter(s) (e.g. ['A'], ['A', 'C']) or option labels. For multi-question prompts, you can pass one entry per question (e.g. ['A', 'B, C'] or ['1: A', '2: B, C']).",
+        },
+        answers: {
+          type: "array",
+          description:
+            "Optional per-question answers when a single ask_user_question prompt contains multiple questions.",
+          items: {
+            type: "object",
+            properties: {
+              questionId: {
+                type: "string",
+                description: "Question id (if known).",
+              },
+              questionIndex: {
+                type: "number",
+                description: "1-based question number (1, 2, ...).",
+              },
+              answerText: {
+                type: "string",
+                description: "Answer text or option letter(s) for this question.",
+              },
+              selectedOptions: {
+                type: "array",
+                items: { type: "string" },
+                description: "Selected option letter(s) ('A', 'B') or option labels for this question.",
+              },
+            },
+            additionalProperties: false,
+          },
         },
       },
-      required: ["pendingId", "answerText"],
+      required: ["pendingId"],
       additionalProperties: false,
     },
     annotations: {
@@ -618,11 +649,21 @@ export class BridgeMcpServer {
         const pendingId = typeof args["pendingId"] === "string" ? args["pendingId"].trim() : "";
         const answerText = typeof args["answerText"] === "string" ? args["answerText"] : undefined;
         const selectedOptionsRaw = args["selectedOptions"];
+        const answersRaw = args["answers"];
 
-        if (!pendingId || answerText === undefined) {
+        if (!pendingId) {
+          return {
+            jsonRpcInvalidParams: "Invalid params: pendingId (non-empty string) is required",
+          };
+        }
+        if (
+          answerText === undefined &&
+          selectedOptionsRaw === undefined &&
+          answersRaw === undefined
+        ) {
           return {
             jsonRpcInvalidParams:
-              "Invalid params: pendingId (non-empty string) and answerText (string) are required",
+              "Invalid params: at least one of answerText, selectedOptions, or answers must be provided",
           };
         }
         if (
@@ -634,12 +675,22 @@ export class BridgeMcpServer {
             jsonRpcInvalidParams: "Invalid params: selectedOptions must be an array of strings",
           };
         }
+        if (
+          answersRaw !== undefined &&
+          (!Array.isArray(answersRaw) ||
+            answersRaw.some((item) => typeof item !== "object" || item === null || Array.isArray(item)))
+        ) {
+          return {
+            jsonRpcInvalidParams: "Invalid params: answers must be an array of objects",
+          };
+        }
 
         const result = this.store.answerQuestion(
           pendingId,
           {
-            answerText,
+            answerText: answerText ?? "",
             selectedOptions: selectedOptionsRaw as string[] | undefined,
+            answers: answersRaw as PerQuestionAnswerInput[] | undefined,
           },
           () => getOptionalService<DshUserQuestionsService>(this.ctx, "userQuestions"),
         );
