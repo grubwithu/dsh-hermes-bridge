@@ -1,6 +1,6 @@
 ---
 name: dsh-bridge
-description: "Remote Telegram supervision and natural-language control for DeepSeek Harness (DSH) via dsh-hermes-bridge MCP tools."
+description: "DSH (DeepSeek Harness) Telegram bridge: use pendingId='#N' (e.g. '#1', '#5') directly with dsh_decide_approval and dsh_answer_question(pendingId, answerText) in 1 step without calling dsh_list_status first."
 version: 0.1.0
 author: dsh-hermes-bridge
 license: MIT
@@ -40,8 +40,7 @@ metadata:
    * 用一两句自然的中文概括正在运行的任务、等待确认的请求（带上各自的 `[#编号]`）或最近刚完成的结果。
 
 2. **处理 Tool Call 审批**（用户说“同意 / 放行 / 批了 / 1 同意 / #2 放行”）：
-   * 先确认目标请求对应的 `pendingId` 或短编号（如 `"#1"`、`"1"` 或 `"apr_xxxx"`；结合最近的 Webhook 通知上下文，必要时调用 `dsh_list_status` 核对）。
-   * 默认调用 `dsh_decide_approval({ pendingId, decision: "allowed-once" })`。
+   * **一步直调（禁止多余探测）**：只要最近一条通知里已经有 `[#N]`（或用户指定了编号），**直接调用** `dsh_decide_approval({ pendingId: "#N", decision: "allowed-once" })`，**不需要**先调 `dsh_list_status` 去查 `apr_xxxx`。
    * **仅当**用户明确表示“这个会话以后都放行 / 这轮任务后面都不用问了”，才传 `decision: "allowed-session"`。
    * 审批完成后，用一句自然中文告诉用户已放行哪个编号/任务的哪项操作。
 
@@ -49,12 +48,11 @@ metadata:
    * 第一步：先调用 `dsh_decide_approval({ pendingId, decision: "rejected", reason: "用户通过 Telegram 拒绝并改派方案" })`。
    * 第二步：再调用 `dsh_send_instruction({ sessionId, message: "<用户的新要求>" })` 把修改意见发给同一会话继续执行。
 
-4. **回答 DSH 的提问（`ask_user_question`）**（用户直接回复了选项字母或问题答案，如“选 A / 1选A，2选BC / 用 SQLite”）：
-   * 调用 `dsh_answer_question({ pendingId, answerText?, selectedOptions?, answers? })`（`pendingId` 同样可直接传 `"#2"`、`"2"` 或 `"qst_xxxx"`）。
-   * `dsh_answer_question` 原生支持：
-     * 直接传选项字母（如 `selectedOptions: ["A"]`、多选 `selectedOptions: ["A", "C"]` 或 `answerText: "A"`）；
-     * 传完整或去掉括号后缀的选项标签（如 `"功能正常"` 会自动匹配 `"功能正常（推荐）"`）；
-     * 多问题一次提问时，可传 `answers: [{ questionIndex: 1, selectedOptions: ["A"] }, { questionIndex: 2, selectedOptions: ["A", "B"] }]`，或 `selectedOptions: ["A", "A, B"]`，或 `answerText: "1选A，2选AB"`。
+4. **回答 DSH 的提问（`ask_user_question`）**（用户回复了选项字母或答案，如“A / 选A / 1选A，2选BC / A, BC / 红”）：
+   * **一步直调（禁止先查 `dsh_list_status` 或手凑完整标签）**：
+     * 直接从最近的提问消息中取短编号 `[#N]`，把用户的回复原样传给 `answerText` 即可：
+       `dsh_answer_question({ pendingId: "#5", answerText: "1选A，2选BC" })` 或 `dsh_answer_question({ pendingId: "#5", answerText: "A" })`。
+     * 插件服务端会自动在后台完成：选项字母（`A`/`B`/`C`、多选 `AB`/`A和C`）到原始 `label` 的映射、多道题自动切分（支持 `"1选A，2选BC"`、`"A; BC"`、`"A, BC"`、`"A B"`）、以及去掉 `（推荐）`/`（单选）` 后缀的模糊匹配。你**完全不需要**先调 `dsh_list_status` 去查 `qst_xxxx` 或查选项的完整文字标签。
    * **重要安全约束**：只要某个会话存在挂起的提问，**严禁**对其直接调用 `dsh_send_instruction`（否则会触发 DSH 底层 `ASK_ABORTED` 导致提问异常中断）。如果 `dsh_send_instruction` 返回 `PENDING_QUESTION_EXISTS`，必须先通过 `dsh_answer_question` 完成作答。
 
 5. **补充新指令或中止任务**：

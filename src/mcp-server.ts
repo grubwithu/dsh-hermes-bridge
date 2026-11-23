@@ -77,14 +77,14 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: "dsh_decide_approval",
     description:
-      "Approve or reject a pending DSH tool call approval request by pendingId or short message number (e.g. '#1', '1', or 'apr_a3f2').",
+      "Approve or reject a pending DSH tool call approval request. FAST PATH: If the chat history already shows a short number like '[#1]', call this tool directly with pendingId='#1' (or '1') without calling dsh_list_status first.",
     inputSchema: {
       type: "object",
       properties: {
         pendingId: {
           type: "string",
           description:
-            "The pending approval identifier or short message number (e.g. '#1', '1', or 'apr_a3f2').",
+            "The short message number from '[#N]' (e.g. '#1' or '1') or full pendingId (e.g. 'apr_a3f2').",
         },
         decision: {
           type: "string",
@@ -107,25 +107,25 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: "dsh_answer_question",
     description:
-      "Answer a pending ask_user_question prompt in DSH by pendingId or short message number (e.g. '#2', '2', or 'qst_1b4c') without aborting the turn. Supports option letters ('A', 'B', 'AC'), partial/full option labels, multi-question numbered replies ('1: A; 2: B, C'), or per-question structured answers.",
+      "Answer a pending ask_user_question prompt in DSH. FAST PATH (1-step, no dsh_list_status needed): Take the short number from '[#N]' in the chat history as pendingId (e.g. '#5') and pass the user's raw reply directly in answerText (e.g. answerText='A', '1选A，2选BC', 'A, BC', or '红'). The bridge server automatically resolves option letters (A/B/C), multi-select letters (AB, A和C), multi-question replies, and partial labels (matching '功能正常' to '功能正常（推荐）') on the server side.",
     inputSchema: {
       type: "object",
       properties: {
         pendingId: {
           type: "string",
           description:
-            "The pending question identifier or short message number (e.g. '#2', '2', or 'qst_1b4c').",
+            "The short message number from '[#N]' (e.g. '#5' or '5') or full pendingId (e.g. 'qst_1b4c').",
         },
         answerText: {
           type: "string",
           description:
-            "The user's answer text, option letter(s) (e.g. 'A', 'B, C', '1选A，2选BC'), or custom free-text reply.",
+            "Preferred: pass the user's reply or option letter(s) directly (e.g. 'A', 'AC', '1选A，2选BC', 'A, BC', or free-text answer). Server resolves letters and labels automatically.",
         },
         selectedOptions: {
           type: "array",
           items: { type: "string" },
           description:
-            "Optional selected option letter(s) (e.g. ['A'], ['A', 'C']) or option labels. For multi-question prompts, you can pass one entry per question (e.g. ['A', 'B, C'] or ['1: A', '2: B, C']).",
+            "Optional selected option letter(s) (e.g. ['A'], ['A', 'C']) or labels. For multi-question prompts, you can pass one entry per question (e.g. ['A', 'BC']). Not required if answerText is provided.",
         },
         answers: {
           type: "array",

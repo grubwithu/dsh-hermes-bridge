@@ -248,6 +248,26 @@ describe("PendingStore - questions & stopped history", () => {
     );
 
     assert.deepEqual(
+      buildAskUserQuestionAnswer(twoQuestions, "A，BC"),
+      {
+        answers: [
+          { id: "q_single", selected: ["功能正常（推荐）"] },
+          { id: "q_multi", selected: ["耗时合理", "需要优化"] },
+        ],
+      },
+    );
+
+    assert.deepEqual(
+      buildAskUserQuestionAnswer(twoQuestions, "A AB"),
+      {
+        answers: [
+          { id: "q_single", selected: ["功能正常（推荐）"] },
+          { id: "q_multi", selected: ["日志清晰", "耗时合理"] },
+        ],
+      },
+    );
+
+    assert.deepEqual(
       buildAskUserQuestionAnswer(twoQuestions, "", ["A", "A, B"]),
       {
         answers: [

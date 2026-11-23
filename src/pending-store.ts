@@ -513,8 +513,9 @@ function resolveSingleQuestionAnswer(
 
 function extractPerQuestionTextSegments(
   answerText: string,
-  questionCount: number,
+  questions: AskUserQuestionItem[],
 ): Map<number, string> | undefined {
+  const questionCount = questions.length;
   const trimmed = answerText.trim();
   if (!trimmed || questionCount <= 1) {
     return undefined;
@@ -566,6 +567,45 @@ function extractPerQuestionTextSegments(
       byQuestion.set(i, semiParts[i]!);
     }
     return byQuestion;
+  }
+
+  // Pattern 3: Comma or whitespace separated segments matching questionCount (e.g. "A, BC", "A，B和C", "A B")
+  const commaParts = trimmed
+    .split(/[,，]+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (commaParts.length === questionCount) {
+    const allMatch = commaParts.every((part, idx) => {
+      const qOpts = questions[idx]?.options ?? [];
+      if (qOpts.length === 0) return true;
+      return resolveSingleQuestionAnswer(questions[idx]!, part, []).selected.length > 0;
+    });
+    if (allMatch) {
+      const byQuestion = new Map<number, string>();
+      for (let i = 0; i < questionCount; i++) {
+        byQuestion.set(i, commaParts[i]!);
+      }
+      return byQuestion;
+    }
+  }
+
+  const spaceParts = trimmed
+    .split(/\s+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (spaceParts.length === questionCount) {
+    const allMatch = spaceParts.every((part, idx) => {
+      const qOpts = questions[idx]?.options ?? [];
+      if (qOpts.length === 0) return true;
+      return resolveSingleQuestionAnswer(questions[idx]!, part, []).selected.length > 0;
+    });
+    if (allMatch) {
+      const byQuestion = new Map<number, string>();
+      for (let i = 0; i < questionCount; i++) {
+        byQuestion.set(i, spaceParts[i]!);
+      }
+      return byQuestion;
+    }
   }
 
   return undefined;
@@ -652,7 +692,7 @@ export function buildAskUserQuestionAnswer(
     };
   }
 
-  const segmentedText = extractPerQuestionTextSegments(answerText, questions.length);
+  const segmentedText = extractPerQuestionTextSegments(answerText, questions);
   const partitionedSelected = partitionSelectedOptionsByQuestion(questions, normalizedSelectedInput);
 
   const answers: AskUserQuestionAnswerItem[] = questions.map((q, qIndex) => {
@@ -1195,7 +1235,17 @@ export class PendingStore {
       cwd: entry.cwd,
       ...(entry.callId !== undefined ? { callId: entry.callId } : {}),
       mode: entry.mode,
-      questions: entry.questions,
+      questions: entry.questions.map((q) => ({
+        ...q,
+        ...(q.options
+          ? {
+              options: q.options.map((opt, idx) => ({
+                code: optionIndexToLetter(idx),
+                ...opt,
+              })),
+            }
+          : {}),
+      })),
       questionText: formatQuestionText(entry.questions),
       options: flattenQuestionOptions(entry.questions),
       createdAt: entry.createdAt,
