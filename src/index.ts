@@ -14,7 +14,7 @@ export const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, "mcpAuthToken" | "hermesW
   hermesWebhookUrl: "http://127.0.0.1:8644/webhooks/dsh-events",
   approvalTimeoutMs: 300_000,
   questionTimeoutMs: 1_800_000,
-  notifyOnTurnEndMinDurationMs: 10_000,
+  notifyOnTurnEndMinDurationMs: 0,
   errorDebounceMs: 60_000,
 };
 
@@ -173,6 +173,8 @@ export {
   buildAskUserQuestionAnswer,
   optionIndexToLetter,
   formatQuestionOptionsInline,
+  formatSingleQuestionBlock,
+  formatQuestionText,
 } from "./pending-store.js";
 export { WebhookClient, generateEventId, signWebhookPayload } from "./webhook-client.js";
 export {

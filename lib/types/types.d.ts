@@ -41,6 +41,7 @@ export interface DshSessionHeader {
 export interface DshSession {
     readonly id: string;
     readonly header: DshSessionHeader;
+    snapshotEvents?(): readonly DshSessionEvent[];
 }
 export interface DshAgent {
     readonly id: string;

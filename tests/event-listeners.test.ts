@@ -381,35 +381,47 @@ describe("Event Listeners - AC-1 through AC-5", () => {
       assert.equal(captured.length, 1);
       assert.equal(captured[0]!.payload.state, "paused_question");
       assert.equal(captured[0]!.payload.shortId, "#1");
-      assert.equal(captured[0]!.payload.summary.startsWith("[#1] "), true);
+      assert.equal(captured[0]!.payload.summary.startsWith("[#1]\n"), true);
       assert.equal(
-        captured[0]!.payload.summary.includes("A. Unit / B. Integration"),
+        captured[0]!.payload.summary.includes("- **A.** Unit（单选）\n- **B.** Integration（单选）"),
         true,
       );
       const qPendingId = captured[0]!.payload.pendingId!;
       assert.ok(qPendingId.startsWith("qst_"));
 
-      // Multi-question summary includes lettered options for every question
-      const multiSummary = formatQuestionsSummary([
+      // Multi-question summary formats headings, single/multi-select tags, and option descriptions
+      const colorSummary = formatQuestionsSummary([
         {
-          id: "q1",
-          question: "第一题（单选）：请选择一个选项。",
-          options: [{ label: "功能正常（推荐）" }, { label: "存在问题" }],
+          id: "q_color",
+          question: "第一题（单选）：请点选一个颜色。",
+          options: [
+            { label: "红", description: "选择红色，即不选择其他颜色" },
+            { label: "绿", description: "选择绿色，即不选择其他颜色" },
+            { label: "蓝", description: "选择蓝色，即不选择其他颜色" },
+          ],
         },
         {
-          id: "q2",
+          id: "q_multi",
           question: "第二题（多选）：请勾选任意一项或多项。",
           multiSelect: true,
-          options: [{ label: "选项甲" }, { label: "选项乙" }],
+          options: [
+            { label: "选项甲", description: "说明甲" },
+            { label: "选项乙", description: "说明乙" },
+          ],
         },
       ]);
       assert.equal(
-        multiSummary.includes("1. 第一题（单选）：请选择一个选项。（可选项：A. 功能正常（推荐） / B. 存在问题）"),
-        true,
-      );
-      assert.equal(
-        multiSummary.includes("2. 第二题（多选）：请勾选任意一项或多项。（多选可选项：A. 选项甲 / B. 选项乙）"),
-        true,
+        colorSummary,
+        [
+          "**1. 第一题（单选）**——请点选一个颜色。",
+          "- **A.** 红（单选）　选择红色，即不选择其他颜色",
+          "- **B.** 绿（单选）　选择绿色，即不选择其他颜色",
+          "- **C.** 蓝（单选）　选择蓝色，即不选择其他颜色",
+          "",
+          "**2. 第二题（多选）**——请勾选任意一项或多项。",
+          "- **A.** 选项甲（多选）　说明甲",
+          "- **B.** 选项乙（多选）　说明乙",
+        ].join("\n"),
       );
 
       const ansRes = store.answerQuestion("#1", { answerText: "A" });
@@ -588,8 +600,8 @@ describe("Event Listeners - AC-1 through AC-5", () => {
       await new Promise((r) => setTimeout(r, 15));
       assert.equal(captured.length, 2);
 
-      // Long completed turn (>= 10_000ms) -> sends stopped with truncated <= 500 char summary
-      const longText = "A".repeat(600);
+      // Long completed turn (>= 10_000ms) -> sends stopped with truncated <= 3500 char summary
+      const longText = "A".repeat(4000);
       ctx.emit("session/event", session, { seq: 7, time: 300_000, type: "turn/start", data: { turn: 4 } });
       ctx.emit("session/event", session, {
         seq: 8,
@@ -610,8 +622,19 @@ describe("Event Listeners - AC-1 through AC-5", () => {
       await new Promise((r) => setTimeout(r, 15));
       assert.equal(captured.length, 3);
       assert.equal(captured[2]!.payload.state, "stopped");
-      assert.ok(captured[2]!.payload.summary.length <= 500);
+      assert.ok(captured[2]!.payload.summary.length <= 3500);
       assert.equal(captured[2]!.payload.summary.endsWith("…"), true);
+
+      // Completed turn with durationMs = 0 (e.g. turn/start missed) is NOT silently swallowed
+      ctx.emit("session/event", session, {
+        seq: 10,
+        time: 400_000,
+        type: "turn/end",
+        data: { turn: 5, reason: { kind: "completed" } },
+      });
+      await new Promise((r) => setTimeout(r, 15));
+      assert.equal(captured.length, 4);
+      assert.equal(captured[3]!.payload.state, "stopped");
     } finally {
       dispose();
       store.dispose();

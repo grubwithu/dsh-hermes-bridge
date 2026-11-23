@@ -50,6 +50,8 @@ export declare function createQuestionTimeoutError(pendingId: string): Error & {
 };
 export declare function optionIndexToLetter(index: number): string;
 export declare function formatQuestionOptionsInline(options: AskUserQuestionOption[]): string;
+export declare function formatSingleQuestionBlock(q: AskUserQuestionItem, index: number): string;
+export declare function formatQuestionText(questions: AskUserQuestionItem[]): string;
 export declare function buildAskUserQuestionAnswer(questions: AskUserQuestionItem[], answerText?: string, selectedOptions?: string[], perQuestionAnswers?: PerQuestionAnswerInput[]): AskUserQuestionAnswer;
 export declare class PendingStore {
     private readonly approvals;

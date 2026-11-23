@@ -12,7 +12,7 @@ import type {
   AskUserQuestionItem,
 } from "./types.js";
 import {
-  formatQuestionOptionsInline,
+  formatQuestionText,
   type PendingStore,
 } from "./pending-store.js";
 import type { WebhookClient } from "./webhook-client.js";
@@ -39,8 +39,10 @@ export function getOptionalService<T>(
 }
 
 const MAX_TOOL_CALL_CACHE = 500;
-const MAX_ARG_PREVIEW_CHARS = 300;
-const MAX_SUMMARY_CHARS = 500;
+const MAX_ARG_PREVIEW_CHARS = 1000;
+const MAX_SUMMARY_CHARS = 3500;
+const MAX_QUESTION_SUMMARY_CHARS = 3500;
+const MAX_ERROR_MESSAGE_CHARS = 1000;
 
 export interface SessionCaches {
   titles: Map<string, string>;
@@ -165,7 +167,7 @@ export function classifyLlmFailure(rawFailure: unknown): ClassifiedFailure | nul
       category: "unknown_error",
       code: "UNKNOWN",
       message: text,
-      summary: `任务遇到异常中断：${truncateText(text, 240)}`,
+      summary: `任务遇到异常中断：${truncateText(text, MAX_ERROR_MESSAGE_CHARS)}`,
     };
   }
 
@@ -187,7 +189,7 @@ export function classifyLlmFailure(rawFailure: unknown): ClassifiedFailure | nul
       code,
       ...(status !== undefined ? { status } : {}),
       message,
-      summary: `API 余额不足或配额耗尽（${status ?? code}）：${truncateText(message, 220)}`,
+      summary: `API 余额不足或配额耗尽（${status ?? code}）：${truncateText(message, MAX_ERROR_MESSAGE_CHARS)}`,
     };
   }
 
@@ -197,7 +199,7 @@ export function classifyLlmFailure(rawFailure: unknown): ClassifiedFailure | nul
       code,
       ...(status !== undefined ? { status } : {}),
       message,
-      summary: `触发 API 限流（${status ?? code}）：${truncateText(message, 220)}`,
+      summary: `触发 API 限流（${status ?? code}）：${truncateText(message, MAX_ERROR_MESSAGE_CHARS)}`,
     };
   }
 
@@ -215,7 +217,7 @@ export function classifyLlmFailure(rawFailure: unknown): ClassifiedFailure | nul
       code,
       ...(status !== undefined ? { status } : {}),
       message,
-      summary: `API 鉴权失败（${status ?? code}）：${truncateText(message, 220)}`,
+      summary: `API 鉴权失败（${status ?? code}）：${truncateText(message, MAX_ERROR_MESSAGE_CHARS)}`,
     };
   }
 
@@ -232,7 +234,7 @@ export function classifyLlmFailure(rawFailure: unknown): ClassifiedFailure | nul
       code,
       ...(status !== undefined ? { status } : {}),
       message,
-      summary: `模型连接或流式输出异常（${code}${status ? ` / HTTP ${status}` : ""}）：${truncateText(message, 220)}`,
+      summary: `模型连接或流式输出异常（${code}${status ? ` / HTTP ${status}` : ""}）：${truncateText(message, MAX_ERROR_MESSAGE_CHARS)}`,
     };
   }
 
@@ -241,7 +243,7 @@ export function classifyLlmFailure(rawFailure: unknown): ClassifiedFailure | nul
     code,
     ...(status !== undefined ? { status } : {}),
     message,
-    summary: `任务异常中断（${code}${status ? ` / HTTP ${status}` : ""}）：${truncateText(message, 220)}`,
+    summary: `任务异常中断（${code}${status ? ` / HTTP ${status}` : ""}）：${truncateText(message, MAX_ERROR_MESSAGE_CHARS)}`,
   };
 }
 
@@ -273,24 +275,34 @@ export function formatQuestionsSummary(questions: AskUserQuestionItem[]): string
   if (questions.length === 0) {
     return "DSH Agent 向你提出了一个问题。";
   }
-  if (questions.length === 1) {
-    const q = questions[0]!;
-    const opts = q.options ?? [];
-    const modeLabel = q.multiSelect ? "多选可选项" : "可选项";
-    const optSuffix =
-      opts.length > 0 ? `（${modeLabel}：${formatQuestionOptionsInline(opts)}）` : "";
-    return truncateText(`${q.question}${optSuffix}`, 600);
+  return truncateText(formatQuestionText(questions), MAX_QUESTION_SUMMARY_CHARS);
+}
+
+function findTurnStartTimeFromSession(
+  session: DshSession,
+  turnNumber: unknown,
+): number | undefined {
+  if (typeof session.snapshotEvents !== "function") {
+    return undefined;
   }
-  const joined = questions
-    .map((q, idx) => {
-      const opts = q.options ?? [];
-      const modeLabel = q.multiSelect ? "多选可选项" : "可选项";
-      const optSuffix =
-        opts.length > 0 ? `（${modeLabel}：${formatQuestionOptionsInline(opts)}）` : "";
-      return `${idx + 1}. ${q.question}${optSuffix}`;
-    })
-    .join("；");
-  return truncateText(`DSH Agent 提出了 ${questions.length} 个问题：${joined}`, 800);
+  try {
+    const events = session.snapshotEvents();
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (!ev || ev.type !== "turn/start") continue;
+      if (
+        turnNumber === undefined ||
+        (ev.data && ev.data["turn"] === turnNumber)
+      ) {
+        if (typeof ev.time === "number") {
+          return ev.time;
+        }
+      }
+    }
+  } catch {
+    // Ignore snapshot errors
+  }
+  return undefined;
 }
 
 function makeAbortError(signal: AbortSignal, fallbackMessage: string): Error {
@@ -572,7 +584,7 @@ export function registerEventListeners(
           state: "paused_question",
           stateLabel: "等待回答提问",
           pendingId,
-          summary: `[${shortId}] ${formatQuestionsSummary(request.questions)}`,
+          summary: `[${shortId}]\n${formatQuestionsSummary(request.questions)}`,
           details: {
             shortId,
             questions: request.questions,
@@ -703,9 +715,19 @@ export function registerEventListeners(
           }
           case "turn/start": {
             caches.turnStarts.set(session.id, typeof event.time === "number" ? event.time : nowFn());
+            caches.lastAssistantTexts.delete(session.id);
+            break;
+          }
+          case "step/start": {
+            if (!caches.turnStarts.has(session.id)) {
+              caches.turnStarts.set(session.id, typeof event.time === "number" ? event.time : nowFn());
+            }
             break;
           }
           case "assistant/message": {
+            if (!caches.turnStarts.has(session.id)) {
+              caches.turnStarts.set(session.id, typeof event.time === "number" ? event.time : nowFn());
+            }
             const msg = data["message"] as { content?: unknown } | undefined;
             const text = extractTextFromContent(msg?.content);
             if (text) {
@@ -731,8 +753,11 @@ export function registerEventListeners(
               reason?: { kind?: string; reason?: string };
             };
             const endTime = typeof event.time === "number" ? event.time : nowFn();
-            const startTime = caches.turnStarts.get(session.id);
-            const durationMs = startTime !== undefined ? Math.max(0, endTime - startTime) : 0;
+            const startTime =
+              caches.turnStarts.get(session.id) ??
+              findTurnStartTimeFromSession(session, data["turn"]);
+            const durationKnown = startTime !== undefined;
+            const durationMs = durationKnown ? Math.max(0, endTime - startTime) : 0;
             caches.turnStarts.delete(session.id);
 
             const meta = resolveSessionMeta(ctx, session, caches);
@@ -781,7 +806,13 @@ export function registerEventListeners(
               stoppedAt: new Date(endTime).toISOString(),
             });
 
-            if (reasonKind === "completed" && durationMs < config.notifyOnTurnEndMinDurationMs) {
+            if (
+              reasonKind === "completed" &&
+              config.notifyOnTurnEndMinDurationMs > 0 &&
+              durationKnown &&
+              durationMs > 0 &&
+              durationMs < config.notifyOnTurnEndMinDurationMs
+            ) {
               break;
             }
             if (reasonKind === "aborted" && reason.reason?.kind === "disposed") {

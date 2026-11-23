@@ -36,7 +36,7 @@ export interface BridgeRuntime {
     dispose: () => Promise<void>;
 }
 export declare function apply(ctx: DshContext, rawConfig?: Partial<BridgeConfig>): BridgeRuntime;
-export { PendingStore, buildAskUserQuestionAnswer, optionIndexToLetter, formatQuestionOptionsInline, } from "./pending-store.js";
+export { PendingStore, buildAskUserQuestionAnswer, optionIndexToLetter, formatQuestionOptionsInline, formatSingleQuestionBlock, formatQuestionText, } from "./pending-store.js";
 export { WebhookClient, generateEventId, signWebhookPayload } from "./webhook-client.js";
 export { registerEventListeners, classifyLlmFailure, extractArgumentsPreview, resolveSessionMeta, getOptionalService, formatQuestionsSummary, } from "./event-listeners.js";
 export { BridgeMcpServer } from "./mcp-server.js";
