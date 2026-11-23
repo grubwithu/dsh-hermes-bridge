@@ -45,7 +45,7 @@ npm run build
 npm test
 ```
 
-> 所有 `@deepseek-ai/*` 宿主包仅声明在 `peerDependencies`，且核心代码不引入运行时第三方包，避免 Dual-Package Hazard；同时 `lib/` 构建产物会提交到 Git 仓库，确保通过 `dsh plugin add "github:..."` 安装时即便宿主 `pnpm` 默认跳过构建脚本（`allowBuilds`）也能直接加载入口。
+> 所有 `@deepseek-ai/*` 宿主包仅声明在 `peerDependencies`，且核心代码不引入运行时第三方包，避免 Dual-Package Hazard。为适配 DSH 使用的 `pnpm` v12 默认安全策略（禁止未列入 `allowBuilds` 的 Git 包执行 `prepare`/`prepack` 构建脚本），本仓库故意不配置 `prepare`/`prepack` 生命周期脚本并直接跟踪提交 `lib/` 编译产物；修改 `src/` 后请运行 `npm run build` 更新 `lib/`。
 
 ### 2. 配置 Hermes 侧（Skill + Webhook + MCP）
 
