@@ -1,27 +1,30 @@
 # dsh-hermes-bridge
 
-同一台 Linux 工作站上 **DeepSeek Harness (DSH)** 与 **Hermes Agent** 的双向本地桥接插件：
+English | [简体中文](./README_zh.md)
 
-* **上行（DSH → Hermes → Telegram）**：监听 DSH 的审批请求（`approval/request`）、用户提问（`user-questions/request`）、模型异常中断（402/429/流错误防抖）与 Turn 结束事件，通过 HMAC-V2 签名 `POST` 到 Hermes 本地 Webhook 适配器，并开启 `mirror_to_session: true` 写入 Telegram 会话历史。
-* **下行（Telegram → Hermes → DSH）**：用户在 Telegram 用最自然的中文纯文字对话回复 Hermes，Hermes 依据内置 Skill（`hermes/skills/dsh-bridge/SKILL.md`）调用本地 StreamableHTTP MCP Server（`http://127.0.0.1:8790/mcp`）暴露的 5 个工具，驱动 DSH 审批放行/拒绝、回答提问、注入新指令或中止任务。
-* **双端并发不互锁**：电脑端 DSH Web UI 与手机端 Telegram 通过 `Promise.race` 竞速审批/回答，先响应者生效；不覆盖或饿死 Web UI。
+A bidirectional local bridge plugin between **DeepSeek Harness (DSH)** and **Hermes Agent** on the same Linux workstation, enabling remote Telegram supervision and natural-language control of local DSH sessions.
+
+* **Upstream (DSH → Hermes → Telegram)**: Listens for DSH tool approval requests (`approval/request`), interactive user questions (`user-questions/request`), debounced LLM/stream failures (HTTP `402`/`429`/auth/stream errors), and `turn/end` completions. Assigns sequential short request numbers (`[#1]`, `[#2]`, …), formats multiple-choice questions with lettered options (`A`, `B`, `C`) and option descriptions, and pushes payloads signed with HMAC-SHA256 V2 to Hermes's local webhook adapter (`mirror_to_session: true`).
+* **Downstream (Telegram → Hermes → DSH)**: Reply to Hermes in plain natural language on Telegram. Hermes (guided by [`hermes/skills/dsh-bridge/SKILL.md`](./hermes/skills/dsh-bridge/SKILL.md) and the MCP tool schemas) converts your intent—including mapping question replies into a strict JSON Schema—and invokes one of 5 tools on the local StreamableHTTP MCP Server (`http://127.0.0.1:8790/mcp`).
+* **Concurrent Dual-Surface Racing**: Desktop DSH Web UI and Telegram race via `Promise.race`. Whichever surface responds first wins and settles the pending store; when Telegram answers first, the bridge aborts the downstream UI `AbortSignal` so the browser modal closes immediately without starving or breaking the Web UI.
 
 ---
 
-## 目录结构
+## Architecture & Directory Layout
 
-```
+```text
 dsh-hermes-bridge/
-├── package.json                # DSH Cordis Bundle 插件清单（dsh.bundle.patch + peerDependencies）
-├── cordis.patch.yml            # DSH 插件默认挂载配置
+├── package.json                # DSH Cordis bundle manifest (dsh.bundle.patch + peerDependencies)
+├── cordis.patch.yml            # Default DSH bundle Cordis patch configuration
 ├── tsconfig.json
+├── lib/                        # Tracked compiled JS & .d.ts outputs (no install-time build script needed)
 ├── src/
-│   ├── index.ts                # Cordis 插件入口（name, inject, Config, apply）
-│   ├── types.ts                # 协议与 DSH 宿主接口类型定义
-│   ├── pending-store.ts        # 挂起审批/提问内存状态表与超时管理
-│   ├── event-listeners.ts      # DSH 四类事件监听与防抖/竞速逻辑
-│   ├── webhook-client.ts       # Hermes Webhook 推送客户端（幂等 ID、HMAC-V2 签名、重试）
-│   └── mcp-server.ts           # 本地 StreamableHTTP MCP Server（5 个反控工具）
+│   ├── index.ts                # Cordis plugin entrypoint (name, inject, Config schema, apply)
+│   ├── types.ts                # Bridge & DSH host service TypeScript interfaces
+│   ├── pending-store.ts        # Pending approvals/questions store, short IDs, timeouts, strict answer validator
+│   ├── event-listeners.ts      # DSH event listeners, debounce, UI signal cancellation, summary formatting
+│   ├── webhook-client.ts       # Hermes Webhook client (idempotent X-Request-ID, HMAC-SHA256 V2, retries)
+│   └── mcp-server.ts           # Loopback StreamableHTTP MCP Server (5 control tools + /health)
 ├── tests/
 │   ├── pending-store.test.ts
 │   ├── event-listeners.test.ts
@@ -35,9 +38,9 @@ dsh-hermes-bridge/
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 1. 构建插件
+### 1. Build & Test (for local development)
 
 ```bash
 pnpm install
@@ -45,63 +48,75 @@ npm run build
 npm test
 ```
 
-> 所有 `@deepseek-ai/*` 宿主包仅声明在 `peerDependencies`，且核心代码不引入运行时第三方包，避免 Dual-Package Hazard。为适配 DSH 使用的 `pnpm` v12 默认安全策略（禁止未列入 `allowBuilds` 的 Git 包执行 `prepare`/`prepack` 构建脚本），本仓库故意不配置 `prepare`/`prepack` 生命周期脚本并直接跟踪提交 `lib/` 编译产物；修改 `src/` 后请运行 `npm run build` 更新 `lib/`。
+> **Packaging Note**: All `@deepseek-ai/*` host packages are declared solely under `peerDependencies`, and the plugin has zero runtime `dependencies` to avoid Dual-Package Hazard. Because DSH uses `pnpm` v12's strict supply-chain policy (which blocks `prepare`/`prepack` build scripts for git-hosted packages unless explicitly listed in `allowBuilds`), this repository intentionally omits lifecycle build scripts and tracks compiled artifacts under `lib/` directly in Git. Whenever you edit files under `src/`, run `npm run build` so `lib/` stays in sync.
 
-### 2. 配置 Hermes 侧（Skill + Webhook + MCP）
+### 2. Configure Hermes (Skill + Webhook + MCP)
 
-运行安装辅助脚本：
+Run the setup helper script:
 
 ```bash
 ./scripts/setup-hermes.sh
 ```
 
-脚本会完成：
-1. 将 `hermes/skills/dsh-bridge` 软链至 `~/.hermes/skills/dsh-bridge`；
-2. 生成随机 `DSH_HERMES_MCP_TOKEN` 与 `DSH_HERMES_WEBHOOK_SECRET`；
-3. 输出可合并到 `~/.hermes/config.yaml` 的配置片段（完整模板见 [hermes/config.example.yaml](hermes/config.example.yaml)）；
-4. 探测 `127.0.0.1:8644/health` 与 `127.0.0.1:8790/health` 连通状态。
+This script:
+1. Symlinks `hermes/skills/dsh-bridge` to `~/.hermes/skills/dsh-bridge`;
+2. Generates random `DSH_HERMES_MCP_TOKEN` and `DSH_HERMES_WEBHOOK_SECRET` values (or reuses values already exported in your environment);
+3. Prints the configuration snippet to merge into `~/.hermes/config.yaml` (see [`hermes/config.example.yaml`](./hermes/config.example.yaml) for the full template, including optional LLM-polished mode);
+4. Probes `http://127.0.0.1:8644/health` and `http://127.0.0.1:8790/health`.
 
-合并配置后重启 Hermes Gateway，使 Webhook 与 MCP Server 生效。
+After updating `~/.hermes/config.yaml`, restart the Hermes Gateway (e.g., `hermes gateway restart`) so the webhook route, MCP server, and updated tool schemas take effect.
 
-### 3. 挂载到 DSH
+### 3. Install & Mount in DSH
 
-先在 DSH 运行环境中设置共享密钥（例如写入 `~/.dsh/.env`，或在 Profile 的 `cordis.patch.yml` 中按 `id: dsh-hermes-bridge` 覆写 `config`）：
+Export the shared secrets in the environment where DSH runs (or override `config` for `id: dsh-hermes-bridge` in your profile's `cordis.patch.yml`):
 
 ```bash
-export DSH_HERMES_MCP_TOKEN="<与 Hermes mcp_servers.dsh_bridge 一致>"
-export DSH_HERMES_WEBHOOK_SECRET="<与 Hermes webhook secret 一致>"
+export DSH_HERMES_MCP_TOKEN="<matches Hermes mcp_servers.dsh_bridge Authorization Bearer token>"
+export DSH_HERMES_WEBHOOK_SECRET="<matches Hermes webhook route secret>"
 ```
 
-* **方式 A：从 GitHub 直接安装到 Profile（推荐）**：
+* **Option A: Install directly from GitHub into a DSH profile (Recommended)**
 
   ```bash
   dsh plugin --profile web add "github:grubwithu/dsh-hermes-bridge#main"
   ```
 
-* **方式 B：本地打包 `.tgz` 安装到 Profile**：
+  To pull new commits later:
+
+  ```bash
+  dsh plugin --profile web update dsh-hermes-bridge
+  ```
+
+* **Option B: Link local working copy (Best for active plugin development)**
+
+  ```bash
+  dsh plugin --profile web add "link:/path/to/dsh-hermes-bridge"
+  ```
+
+* **Option C: Pack a local `.tgz` tarball**
 
   ```bash
   npm run build && npm pack
-  dsh plugin --profile web add /mnt/hd/users/grub/dsh-hermes-bridge/dsh-hermes-bridge-0.1.0.tgz
+  dsh plugin --profile web add /path/to/dsh-hermes-bridge/dsh-hermes-bridge-0.1.0.tgz
   ```
 
-  > 注意：通过 `dsh plugin add` 安装带 `dsh.bundle.patch` 的插件后，无需再在 Profile 的 `cordis.patch.yml` 中重复 `- insert: id: dsh-hermes-bridge`，否则会触发 `duplicate loader entry id`。若需覆盖默认配置（如设置密钥），仅按 `- id: dsh-hermes-bridge` 覆写 `config` 字段即可。
+  > **Important**: Because this package declares `dsh.bundle.patch` in `package.json`, installing it via `dsh plugin add` mounts it automatically. Do **not** add another `- insert: - id: dsh-hermes-bridge` entry in your profile's `cordis.patch.yml` (which causes `duplicate loader entry id`). To customize plugin config per profile, patch the existing entry by `id: dsh-hermes-bridge`.
 
-* **方式 C：未安装时的本地临时 `--patch` 调试**：
+* **Option D: Ephemeral `--patch` debugging without installing**
 
-  [cordis.patch.yml](cordis.patch.yml) 中的 `name: dsh-hermes-bridge` 仅在安装进 Profile 后通过包名解析；若未执行 `dsh plugin add` 而直接临时调试，请新建一份本地 `dev-patch.local.yml`（已被 `.gitignore` 忽略），将 `name` 指向构建产物绝对路径：
+  Create a local `dev-patch.local.yml` (gitignored) pointing `name` to the absolute path of `lib/index.js`:
 
   ```yaml
   - insert:
       - id: dsh-hermes-bridge
-        name: /mnt/hd/users/grub/dsh-hermes-bridge/lib/index.js
+        name: /path/to/dsh-hermes-bridge/lib/index.js
         config:
           mcpHost: "127.0.0.1"
           mcpPort: 8790
           hermesWebhookUrl: "http://127.0.0.1:8644/webhooks/dsh-events"
   ```
 
-  然后启动：
+  Launch DSH with:
 
   ```bash
   dsh --profile web --patch ./dev-patch.local.yml
@@ -109,41 +124,45 @@ export DSH_HERMES_WEBHOOK_SECRET="<与 Hermes webhook secret 一致>"
 
 ---
 
-## 配置项参考（`cordis.patch.yml`）
+## Configuration Reference (`Config` / `cordis.patch.yml`)
 
-| 配置项 | 默认值 | 说明 |
+| Option | Default | Description |
 | --- | --- | --- |
-| `mcpHost` | `"127.0.0.1"` | MCP HTTP Server 监听地址（严格限定回环） |
-| `mcpPort` | `8790` | MCP HTTP Server 监听端口 |
-| `mcpAuthToken` | `""`（回退读 `DSH_HERMES_MCP_TOKEN`） | Bearer 鉴权密钥；为空时仅放行 loopback 并打印启动警告 |
-| `hermesWebhookUrl` | `"http://127.0.0.1:8644/webhooks/dsh-events"` | Hermes Webhook 接收地址 |
-| `hermesWebhookSecret` | `""`（回退读 `DSH_HERMES_WEBHOOK_SECRET`） | HMAC-SHA256 V2 签名密钥（`X-Webhook-Timestamp` + `X-Webhook-Signature-V2`） |
-| `approvalTimeoutMs` | `300000` | 审批等待超时（5 分钟）；超时自动以 `rejected` 结束，绝不放行 |
-| `questionTimeoutMs` | `1800000` | 提问等待超时（30 分钟）；超时结束挂起等待 |
-| `notifyOnTurnEndMinDurationMs` | `10000` | 正常完成 Turn 低于该耗时（10 秒）时不推完成通知 |
-| `errorDebounceMs` | `60000` | 同会话同类型错误防抖窗口（60 秒） |
+| `mcpHost` | `"127.0.0.1"` | Bind address for the MCP HTTP server (loopback only when auth token is empty) |
+| `mcpPort` | `8790` | Listening port for the MCP HTTP server (`0` for ephemeral port in tests) |
+| `mcpAuthToken` | `""` (fallback: `DSH_HERMES_MCP_TOKEN`) | Bearer token for `POST /mcp`; if empty, non-loopback requests are rejected with `403` and a startup warning is logged |
+| `hermesWebhookUrl` | `"http://127.0.0.1:8644/webhooks/dsh-events"` | Target URL of Hermes's local webhook receiver |
+| `hermesWebhookSecret` | `""` (fallback: `DSH_HERMES_WEBHOOK_SECRET`) | HMAC-SHA256 V2 secret (`X-Webhook-Timestamp` + `X-Webhook-Signature-V2`) |
+| `approvalTimeoutMs` | `300000` | Timeout (ms) waiting for an approval decision (5 min); fails closed as `rejected` |
+| `questionTimeoutMs` | `1800000` | Timeout (ms) waiting for a user question answer (30 min) |
+| `notifyOnTurnEndMinDurationMs` | `0` (`10000` in `cordis.patch.yml`) | Minimum turn duration (ms) to emit a `stopped` webhook on normal completion (`durationMs === 0` is never suppressed) |
+| `errorDebounceMs` | `60000` | Per-session, per-error-category debounce window (60s) |
 
 ---
 
-## MCP 工具一览
+## MCP Tools Exposed by `dsh-hermes-bridge`
 
-| 工具名 | 作用 |
+All tools are served over StreamableHTTP at `POST /mcp` (plus `GET /health` for readiness checks):
+
+| Tool | Purpose |
 | --- | --- |
-| `dsh_list_status` | 列出挂起审批、挂起提问、活跃会话及可选的最近结束 Turn |
-| `dsh_decide_approval` | 按 `pendingId` 决策 `allowed-once` / `allowed-session` / `rejected`；失效返回 `EXPIRED_OR_RESTARTED` |
-| `dsh_answer_question` | 按 `pendingId` 回答 `ask_user_question`（兼容普通与 `continued` 续答模式），不触发 `ASK_ABORTED` |
-| `dsh_send_instruction` | 向指定会话注入新指令；若该会话有挂起提问则拒绝并提示先调用 `dsh_answer_question` |
-| `dsh_cancel_session` | 中止指定会话的当前 Turn（`agent.cancel({ kind: 'user' })`） |
+| `dsh_list_status` | Lists all pending approvals, pending user questions (with `[#N]` short IDs and `A`/`B`/`C` option codes), active DSH sessions, and optional `recentStopped` turns. |
+| `dsh_decide_approval` | Approves (`allowed-once` or `allowed-session`) or rejects (`rejected`) a pending approval by `#N`, `N`, or full `apr_xxxx` ID. Returns `EXPIRED_OR_RESTARTED` if already settled or restarted. |
+| `dsh_answer_question` | Submits an answer to a pending `ask_user_question` prompt (both `open` and timed `continued` modes) using a strict JSON Schema: `{ pendingId, answers: [{ questionIndex, selected, custom? }] }`. `selected` accepts exact option letters (`"A"`, `"B"`, …) or exact labels and validates single/multi-select rules strictly without silently falling back to `custom`. |
+| `dsh_send_instruction` | Sends a follow-up user message (`inject` / `followup` / `steer`) to a live DSH session. Refuses with `PENDING_QUESTION_EXISTS` if the session has an unanswered question to prevent triggering `ASK_ABORTED`. |
+| `dsh_cancel_session` | Cancels the active turn of a DSH session (`agent.cancel({ kind: "user" })`). |
 
 ---
 
-## 验收场景清单（AC-1 ～ AC-8）
+## Key Behaviors & Design Guarantees
 
-* **AC-1**：DSH 触发审批拦截 → Webhook 上报至 Hermes → 用户在 Telegram 回复纯文字放行 → DSH 继续执行。
-* **AC-2**：Web UI 与 Telegram 竞速审批 → 电脑端先决策后清理挂起表 → Telegram 后续回复收到失效提示（`EXPIRED_OR_RESTARTED`）。
-* **AC-3**：无浏览器连接时触发 `ask_user_question` → Telegram 收到提问 → 用户回复答案后 DSH 正常继续且不触发 `ASK_ABORTED`。
-* **AC-4**：API 402/429/流错误 → 60 秒窗口内同一会话同类错误仅推送一次。
-* **AC-5**：长任务 Turn 正常完成 → 推送含任务标题与助手摘要（≤ 500 字符）的通知。
-* **AC-6**：拒绝审批并改派方案 → 先 `dsh_decide_approval(..., "rejected")` 再 `dsh_send_instruction(...)`。
-* **AC-7**：多任务同时挂起 → Skill 强制 Hermes 反问澄清，禁止盲目放行。
-* **AC-8**：审批超时自动 `rejected`；进程重启后旧通知请求返回 `EXPIRED_OR_RESTARTED`。
+* **Short Request Numbers (`#1`, `#2`, …)**: Every notification (`paused_approval`, `paused_question`, `interrupted_error`, `stopped`) carries a short sequence identifier (`shortId`), making it easy to disambiguate or reference specific requests when multiple sessions pause around the same time.
+* **Structured Multiple-Choice Rendering**: Both single-question and multi-question prompts render each question with its index, single/multi-select tag, prompt text, lettered options (`A`, `B`, `C`, …), and option descriptions.
+* **Strict LLM-to-Schema Question Answering**: Hermes LLM translates the user's natural-language reply into `{ pendingId, answers: [{ questionIndex, selected, custom? }] }`. The server strictly validates question count, single-select constraints, and option letters/labels (returning `INVALID_ANSWER_SCHEMA` with valid choices on mismatch).
+* **Fail-Closed & Stale-Safe**: Approvals time out as `rejected`; stale or post-restart actions return `EXPIRED_OR_RESTARTED`; duplicate LLM rate-limit/quota errors (`429`/`402`) are debounced within `errorDebounceMs`.
+
+---
+
+## License
+
+MIT

@@ -19,7 +19,8 @@
     "cordis.patch.yml",
     "hermes",
     "scripts",
-    "README.md"
+    "README.md",
+    "README_zh.md"
   ],
   "engines": {
     "dsh": ">=0.2.0"
